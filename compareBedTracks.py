@@ -275,33 +275,41 @@ def genTrackLine(name, description=None, _type=None, visibility=2, color=None):
         result.append('color="{}"'.format(color))
     return 'track ' + (' ').join(result) + '\n'
 
-
-
 # Begin main thread
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description="Compare two bedgraph tracks")
     
-    parser.add_argument('bg1', help='First bedgraph file')
-    parser.add_argument('bg2', help='Second bedgraph file')
+#    parser.add_argument('bg1', help='First bedgraph file')
+#    parser.add_argument('bg2', help='Second bedgraph file')
     parser.add_argument('annotation', help='Genome annotation file if GTF format')
     parser.add_argument('kleats', help='File containing list of kleat output files to use')
+    parser.add_argument('alignments', help='File containing list of alignment output files to use. Must be in BAM or SAM format. Names of each BAM/SAM file must also differ')
     parser.add_argument('-cw', '--cluster_window', type=int, default=20, help='Set the window size for clustering KLEAT cleavage sites. Default = 20')
     
     args = parser.parse_args()
 
-    try:
-        bg1 = pysam.TabixFile(args.bg1)
-    except IOError:
-        pysam.tabix_index(args.bg1, seq_col=0, start_col=1, end_col=2)
-        bg1 = pysam.TabixFile(args.bg1)
-    try:
-        bg2 = pysam.TabixFile(args.bg2)
-    except IOError:
-        pysam.tabix_index(args.bg2, seq_col=0, start_col=1, end_col=2)
-        bg2 = pysam.TabixFile(args.bg2)
+#    try:
+#        bg1 = pysam.TabixFile(args.bg1)
+#    except IOError:
+#        pysam.tabix_index(args.bg1, seq_col=0, start_col=1, end_col=2)
+#        bg1 = pysam.TabixFile(args.bg1)
+#    try:
+#        bg2 = pysam.TabixFile(args.bg2)
+#    except IOError:
+#        pysam.tabix_index(args.bg2, seq_col=0, start_col=1, end_col=2)
+#        bg2 = pysam.TabixFile(args.bg2)
 
     all_kleats = []
+
+    aligns = {}
+
+    for b in parseConfig(args.alignments):
+        name = os.path.basename(os.path.abspath(b)).split('.')[0]
+        aligns[name] = {'align': pysam.AlignmentFile(b),
+                        'read_count': None,
+                        'med': None,
+                        'regions': {}}
 
     for k in parseConfig(args.kleats):
         kleat = parseKleat(k, with_pas=True, min_num_bridge_reads=2, min_bridge_read_tail_len=4)
@@ -347,6 +355,13 @@ if __name__ == '__main__':
             results[chrom][gene] = {}
             spaces = []
             strand = None
+            gene_start = annot[chrom][gene][0].start
+            gene_end = annot[chrom][gene][-1].end
+            for a in aligns:
+                read_count = 0
+                for read in aligns[a]['align'].fetch(chrom, gene_start, gene_end):
+                    read_count += 1
+                aligns[a]['read_count'] = read_count
             for i in xrange(1,len(annot[chrom][gene])):
                 strand = annot[chrom][gene][i].strand
                 dist = annot[chrom][gene][i].start - annot[chrom][gene][i-1].end
@@ -366,31 +381,44 @@ if __name__ == '__main__':
                 sec = 0
                 for k in kleats[chrom][gene]:
                     cs = k.cleavage_site
+                    key = '{}:{}-{}'.format(chrom,last,cs)
                     if (cs > region.end):
                         cs = region.end
                         pass
                     if cs - last < 20:
                         continue
                     regions += ('\t').join([chrom, str(last), str(cs), '{}_utr_{}'.format(gene,sec), '0', region.strand, '\n'])
-                    med_1 = []
-                    med_2 = []
-                    for i in bg1.fetch(chrom, last, cs):
-                        med_1.append(int(i.split('\t')[-1]))
-                    for i in bg2.fetch(chrom, last, cs):
-                        med_2.append(int(i.split('\t')[-1]))
-                    if not med_1 or not med_2:
-                        continue
-                    # Sort
-                    med_1 = sorted(med_1)
-                    med_2 = sorted(med_2)
-                    len1 = len(med_1)
-                    len2 = len(med_2)
-                    # Get medians
-                    med_1 = med_1[len(med_1)/2]
-                    med_2 = med_2[len(med_2)/2]
-                    results[chrom][gene]['{}:{}-{}'.format(chrom,last,cs)] = [med_1, med_2]
+                    x = []
+                    for a in aligns:
+                        m = []
+                        for p in aligns[a]['align'].pileup(chrom, last, cs):
+                            m.append(p.nsegments)
+                        m = sorted(m)
+                        x.append(m)
+                        lenm = len(m)
+                        #med = m[lenm/2]
+                        med = sum(m)/lenm
+                        med = float(med)/aligns[a]['read_count']
+                        aligns[a]['regions'][key] = med
+                        
                     last = cs+1
                     sec += 1
+
+    #total = []
+    #for a in aligns:
+    print aligns   
+    total = []
+    lena = len(aligns)
+    keys = aligns.keys()
+    for region in aligns[keys[0]]['regions']:
+        for i in xrange(lena-1):
+            for j in xrange(i+1, lena):
+                distance = abs(aligns[keys[i]]['regions'][region] - aligns[keys[j]]['regions'][region])
+                if distance > 5e-5:
+                    print '{}\t{}\t{}\t{}'.format(gene,keys[i], keys[j], region)
+                #total.append(distance)
+
+    #print total
 
     regions = regions.strip()
 
@@ -398,14 +426,14 @@ if __name__ == '__main__':
         f.write(regions)
 
 
-    print results['chr3']['HEMK1']
-    for chrom in results:
-        for gene in results[chrom]:
-            for region in results[chrom][gene]:
-                mbg1 = results[chrom][gene][region][0]
-                mbg2 = results[chrom][gene][region][1]
-                if abs(mbg1 - mbg2) < 800:
-                    continue
-                print '{}\t{}'.format(gene, region)
-                print '\tbg1: ' + str(mbg1)
-                print '\tbg2: ' + str(mbg2)
+#    print results['chr3']['HEMK1']
+#    for chrom in results:
+#        for gene in results[chrom]:
+#            for region in results[chrom][gene]:
+#                mbg1 = results[chrom][gene][region][0]
+#                mbg2 = results[chrom][gene][region][1]
+#                if abs(mbg1 - mbg2) < 800:
+#                    continue
+#                print '{}\t{}'.format(gene, region)
+#                print '\tbg1: ' + str(mbg1)
+#                print '\tbg2: ' + str(mbg2)
