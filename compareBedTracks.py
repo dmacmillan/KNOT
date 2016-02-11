@@ -114,6 +114,9 @@ class GTF:
         self.frame = frame
         self.attribute = attribute
 
+    def __str__(self):
+        return '{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}'.format(self.seqname, self.source, self.feature, self.start, self.end, self.score, self.strand, self.frame, self.attribute)
+
 def parseGTF(gtffile, seqnames=None, sources=None, features=None , not_sources=None, not_features=None, gzipped=False, add_chr=True):
     results = []
     if gzipped:
@@ -168,6 +171,21 @@ def mergeTwoGTFs(g1, g2, delim='|'):
     res.frame = g1.frame
     res.attribute = g1.attribute
     return res
+
+def groupPysamGTF(gtf):
+    result = {}
+    for g in gtf:
+        if g.seqname not in result:
+            result[g.seqname] = {g.attribute['gene_name']: [g]}
+        if g.attribute['gene_name'] not in result[g.seqname]:
+            result[g.seqname][g.attribute['gene_name']] = [g]
+        else:
+            result[g.seqname][g.attribute['gene_name']].append(g)
+    for chrom in result:
+        for gene in result[chrom]:
+            result[chrom][gene].sort(key=lambda x: x.start)
+            result[chrom][gene] = mergeGTFList(result[chrom][gene])
+    return result
 
 def groupGTF(gtf):
     result = {}
@@ -305,6 +323,7 @@ if __name__ == '__main__':
     sys.stdout.write('Parsing GTF...')
     sys.stdout.flush()
     annot = parseGTF(args.annotation, seqnames=['chr{}'.format(x) for x in range(1,23)] + ['chrX', 'chrY'], sources=['protein_coding'], features='UTR')
+    #annot = pysam.TabixFile(args.annotation, parser=asGTF)
     print 'DONE'
 
     sys.stdout.write('Grouping GTF...')
@@ -339,9 +358,10 @@ if __name__ == '__main__':
                 annot[chrom][gene] = annot[chrom][gene][:imax+1]
             else:
                 annot[chrom][gene] = annot[chrom][gene][imax+1:]
-            for i,region in enumerate(annot[chrom][gene]):
+            for region in annot[chrom][gene]:
                 last = region.start
                 intervals = []
+                sec = 0
                 for k in kleats[chrom][gene]:
                     cs = k.cleavage_site
                     if (cs > region.end):
@@ -349,19 +369,22 @@ if __name__ == '__main__':
                         pass
                     if cs - last < 20:
                         continue
-                    regions += ('\t').join([chrom, str(last), str(cs), '{}_utr_{}'.format(gene,i), '0', region.strand, '\n'])
+                    regions += ('\t').join([chrom, str(last), str(cs), '{}_utr_{}'.format(gene,sec), '0', region.strand, '\n'])
                     med_1 = []
                     med_2 = []
                     for i in bg1.fetch(chrom, last, cs):
                         med_1.append(int(i.split('\t')[-1]))
                     for i in bg2.fetch(chrom, last, cs):
                         med_2.append(int(i.split('\t')[-1]))
+                    if not med_1 or not med_2:
+                        continue
                     med_1 = sorted(med_1)
                     med_2 = sorted(med_2)
                     med_1 = med_1[len(med_1)/2]
                     med_2 = med_2[len(med_2)/2]
                     results[chrom][gene]['{}:{}-{}'.format(chrom,last,cs)] = [med_1, med_2]
                     last = cs+1
+                    sec += 1
 
     regions = regions.strip()
 
