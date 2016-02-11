@@ -314,14 +314,18 @@ if __name__ == '__main__':
 
     regions = ''
 
+    results = {}
+
     for chrom in annot:
         if chrom not in kleats:
             continue
+        results[chrom] = {}
         for gene in annot[chrom]:
             if gene not in kleats[chrom]:
                 continue
             if (not annot[chrom][gene]):
                 continue
+            results[chrom][gene] = {}
             spaces = []
             strand = None
             for i in xrange(1,len(annot[chrom][gene])):
@@ -354,14 +358,23 @@ if __name__ == '__main__':
                         med_2.append(int(i.split('\t')[-1]))
                     med_1 = sorted(med_1)
                     med_2 = sorted(med_2)
-                    if gene == 'HEMK1':
-                        print '{}:{}-{}'.format(chrom,last,cs)
-                        print med_1[len(med_1)/2]
-                        print med_2[len(med_2)/2]
-                        raw_input('*')
+                    med_1 = med_1[len(med_1)/2]
+                    med_2 = med_2[len(med_2)/2]
+                    results[chrom][gene]['{}:{}-{}'.format(chrom,last,cs)] = [med_1, med_2]
                     last = cs+1
 
     regions = regions.strip()
 
     with open('./regions.bed', 'w') as f:
         f.write(regions)
+
+    for chrom in results:
+        for gene in results[chrom]:
+            for region in results[chrom][gene]:
+                mbg1 = results[chrom][gene][region][0]
+                mbg2 = results[chrom][gene][region][1]
+                if abs(mbg1 - mbg2) < 800:
+                    continue
+                print '{}\t{}'.format(gene, region)
+                print '\tbg1: ' + str(mbg1)
+                print '\tbg2: ' + str(mbg2)
