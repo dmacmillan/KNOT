@@ -1,6 +1,7 @@
 import argparse, sys, os
 from copy import deepcopy
-from pybedtools import *
+#from pybedtools import *
+import pysam
 
 def kleat_int(thing):
     try:
@@ -244,6 +245,21 @@ def kleatLinkage(sites, window=20):
             kleatLinkage(sites)
     return sites
 
+def genTrackLine(name, description=None, _type=None, visibility=2, color=None):
+    result = ['name="{}"'.format(name)]
+    if description:
+        result.append('description="{}"'.format(description))
+    if _type:
+        result.append('type="{}"'.format(_type))
+    if visibility:
+        result.append('visibility="{}"'.format(visibility))
+    if color:
+        result.append('color="{}"'.format(color))
+    return 'track ' + (' ').join(result) + '\n'
+
+
+
+# Begin main thread
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description="Compare two bedgraph tracks")
@@ -255,6 +271,17 @@ if __name__ == '__main__':
     parser.add_argument('-cw', '--cluster_window', type=int, default=20, help='Set the window size for clustering KLEAT cleavage sites. Default = 20')
     
     args = parser.parse_args()
+
+    try:
+        bg1 = pysam.TabixFile(args.bg1)
+    except IOError:
+        pysam.tabix_index(args.bg1, seq_col=0, start_col=1, end_col=2)
+        bg1 = pysam.TabixFile(args.bg1)
+    try:
+        bg2 = pysam.TabixFile(args.bg2)
+    except IOError:
+        pysam.tabix_index(args.bg2, seq_col=0, start_col=1, end_col=2)
+        bg2 = pysam.TabixFile(args.bg2)
 
     all_kleats = []
 
@@ -271,11 +298,9 @@ if __name__ == '__main__':
             sites = kleats[chrom][gene]
             sites = kleatLinkage(sites, args.cluster_window)
 
-    print 'cs\tlen_t_con\tno_tai_rds\tno_br_rds\tmax_br_tai_len\ttai+br_rds\tpas'
-    for k in kleats['chr3']['HEMK1']:
-        print '{}\t{}\t{}\t{}\t{}\t{}\t{}'.format(k.cleavage_site, k.length_of_tail_in_contig, k.number_of_tail_reads, k.number_of_bridge_reads, k.max_bridge_read_tail_length, k.tail_and_bridge_reads, k.pas)
-
-    sys.exit()
+#    print 'cs\tlen_t_con\tno_tai_rds\tno_br_rds\tmax_br_tai_len\ttai+br_rds\tpas'
+#    for k in kleats['chr3']['HEMK1']:
+#        print '{}\t{}\t{}\t{}\t{}\t{}\t{}'.format(k.cleavage_site, k.length_of_tail_in_contig, k.number_of_tail_reads, k.number_of_bridge_reads, k.max_bridge_read_tail_length, k.tail_and_bridge_reads, k.pas)
 
     sys.stdout.write('Parsing GTF...')
     sys.stdout.flush()
@@ -311,11 +336,30 @@ if __name__ == '__main__':
             else:
                 annot[chrom][gene] = annot[chrom][gene][imax+1:]
             for i,region in enumerate(annot[chrom][gene]):
-                regions += ('\t').join([chrom, str(region.start), str(region.end), '{}_utr_{}'.format(gene,i), '0', region.strand, '\n'])
+                last = region.start
+                intervals = []
                 for k in kleats[chrom][gene]:
-                    if region.start < k.cleavage_site < region.end:
+                    cs = k.cleavage_site
+                    if (cs > region.end):
+                        cs = region.end
+                        pass
+                    if cs - last < 20:
                         continue
-
+                    regions += ('\t').join([chrom, str(last), str(cs), '{}_utr_{}'.format(gene,i), '0', region.strand, '\n'])
+                    med_1 = []
+                    med_2 = []
+                    for i in bg1.fetch(chrom, last, cs):
+                        med_1.append(int(i.split('\t')[-1]))
+                    for i in bg2.fetch(chrom, last, cs):
+                        med_2.append(int(i.split('\t')[-1]))
+                    med_1 = sorted(med_1)
+                    med_2 = sorted(med_2)
+                    if gene == 'HEMK1':
+                        print '{}:{}-{}'.format(chrom,last,cs)
+                        print med_1[len(med_1)/2]
+                        print med_2[len(med_2)/2]
+                        raw_input('*')
+                    last = cs+1
 
     regions = regions.strip()
 
