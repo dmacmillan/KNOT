@@ -356,8 +356,10 @@ if __name__ == '__main__':
             imax = spaces.index(max(spaces))
             if strand == '-':
                 annot[chrom][gene] = annot[chrom][gene][:imax+1]
+                annot[chrom][gene] = [annot[chrom][gene][0]]
             else:
                 annot[chrom][gene] = annot[chrom][gene][imax+1:]
+                annot[chrom][gene] = [annot[chrom][gene][-1]]
             for region in annot[chrom][gene]:
                 last = region.start
                 intervals = []
@@ -378,8 +380,12 @@ if __name__ == '__main__':
                         med_2.append(int(i.split('\t')[-1]))
                     if not med_1 or not med_2:
                         continue
+                    # Sort
                     med_1 = sorted(med_1)
                     med_2 = sorted(med_2)
+                    len1 = len(med_1)
+                    len2 = len(med_2)
+                    # Get medians
                     med_1 = med_1[len(med_1)/2]
                     med_2 = med_2[len(med_2)/2]
                     results[chrom][gene]['{}:{}-{}'.format(chrom,last,cs)] = [med_1, med_2]
@@ -391,6 +397,8 @@ if __name__ == '__main__':
     with open('./regions.bed', 'w') as f:
         f.write(regions)
 
+
+    print results['chr3']['HEMK1']
     for chrom in results:
         for gene in results[chrom]:
             for region in results[chrom][gene]:
