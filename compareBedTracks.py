@@ -306,6 +306,15 @@ def pstdev(data):
     pvar = ss/n # the population variance
     return pvar**0.5
 
+def writeFile(path, name=None, *lines):
+    if name:
+        result = os.path.join(path,name)
+    else:
+        result = path
+    with open(result, 'w') as f:
+        f.write(('\n').join(lines))
+    return result
+
 # Begin main thread
 if __name__ == '__main__':
 
@@ -317,9 +326,12 @@ if __name__ == '__main__':
     parser.add_argument('kleats', help='File containing list of kleat output files to use')
     parser.add_argument('alignments', help='File containing list of alignment output files to use. Must be in BAM or SAM format. Names of each BAM/SAM file must also differ')
     parser.add_argument('-cw', '--cluster_window', type=int, default=20, help='Set the window size for clustering KLEAT cleavage sites. Default = 20')
+    parser.add_argument('-o', '--outdir', default=os.getcwd(), help='Directory to output to. Default is current directory')
+    parser.add_argument('-r', '--reference', default='/home/dmacmillan/references/hg19/hg19.fa', help='Path to the reference genome from which to fetch sequences')
     
     args = parser.parse_args()
 
+    ref = pysam.FastaFile(args.reference)
 #    try:
 #        bg1 = pysam.TabixFile(args.bg1)
 #    except IOError:
@@ -370,8 +382,12 @@ if __name__ == '__main__':
     print 'DONE'
 
     regions = ''
+    fasta = ''
 
     results = {}
+
+    sys.stdout.write('Computing coverage of regions...')
+    sys.stdout.flush()
 
     for chrom in annot:
         if chrom not in kleats:
@@ -402,14 +418,20 @@ if __name__ == '__main__':
 #            imax = spaces.index(max(spaces))
             if strand == '-':
 #                annot[chrom][gene] = annot[chrom][gene][:imax+1]
-                annot[chrom][gene] = [annot[chrom][gene][0]]
+                annot[chrom][gene] = [annot[chrom][gene][:1]]
             else:
 #                annot[chrom][gene] = annot[chrom][gene][imax+1:]
-                annot[chrom][gene] = [annot[chrom][gene][-1]]
+                annot[chrom][gene] = [annot[chrom][gene][-2:]]
             for region in annot[chrom][gene]:
                 last = region.start
                 intervals = []
                 sec = 0
+                cleaved = False
+                for k in kleats[chrom][gene]:
+                    if (region.start < k.cleavage_site < region.end):
+                        cleaved = True
+                if not cleaved:
+                    continue
                 for k in kleats[chrom][gene]:
                     cs = k.cleavage_site
                     key = '{}:{}-{}'.format(chrom,last,cs)
@@ -419,6 +441,9 @@ if __name__ == '__main__':
                     if cs - last < 20:
                         continue
                     regions += ('\t').join([chrom, str(last), str(cs), '{}_utr_{}'.format(gene,sec), '0', region.strand, '\n'])
+                    header = '>' + ('|').join([chrom, gene, str(last), str(cs), region.strand]) + '\n'
+                    seq = ref.fetch(chrom, last, cs).upper() + '\n'
+                    fasta += header + seq
                     span = '{}-{}'.format(last,cs)
                     results[chrom][gene][span] = {}
                     for a in aligns:
@@ -439,10 +464,14 @@ if __name__ == '__main__':
 
     regions = regions.strip()
 
-    with open('./regions.bed', 'w') as f:
-        f.write(regions)
+    writeFile(args.outdir, 'regions.bed', regions)
+    writeFile(args.outdir, 'regions.fa', fasta)
 
     #print results
+
+    print 'DONE'
+    sys.stdout.write('Calculating population standard deviation...')
+    sys.stdout.flush()
 
     all_dists = []
     for chrom in results:
@@ -451,6 +480,10 @@ if __name__ == '__main__':
                 rcg = results[chrom][gene]
                 meds = [rcg[span][a]['med'] for a in rcg[span]]
                 all_dists += allDistances(meds)
+
+    print 'DONE'
+    print 'Identifying significant variation...'
+    sys.stdout.flush()
 
     stdev = pstdev(all_dists)
     print 'Population STDEV: {}'.format(stdev)
@@ -461,11 +494,10 @@ if __name__ == '__main__':
             for span in results[chrom][gene]:
                 #print '    ' + span
                 rcg = results[chrom][gene]
-                lenl = len(rcg)
+                lenl = len(rcg[span])
                 keys = rcg[span].keys()
                 for i in xrange(lenl-1):
                     for j in xrange(i,lenl):
                         #print rcg[span]
                         dist = abs(rcg[span][keys[i]]['med'] - rcg[span][keys[j]]['med'])
-                        if dist > stdev:
-                            print '{}\t{}\t{}\t{}\t{}\t{}'.format(chrom, gene, span, keys[i], keys[j], dist)
+                        print '{}\t{}\t{}\t{}\t{}\t{}'.format(chrom, gene, span, keys[i], keys[j], dist)
