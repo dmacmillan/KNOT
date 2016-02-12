@@ -275,6 +275,37 @@ def genTrackLine(name, description=None, _type=None, visibility=2, color=None):
         result.append('color="{}"'.format(color))
     return 'track ' + (' ').join(result) + '\n'
 
+def allDistances(_list):
+    result = []
+    lenl = len(_list)
+    for i in xrange(lenl-1):
+        for j in xrange(i+1, lenl):
+            dist = abs(_list[i] - _list[j])
+            result.append(dist)
+    return result
+
+def mean(data):
+    """Return the sample arithmetic mean of data."""
+    n = len(data)
+    if n < 1:
+        raise ValueError('mean requires at least one data point')
+    return sum(data)/n # in Python 2 use sum(data)/float(n)
+
+def _ss(data):
+    """Return sum of square deviations of sequence data."""
+    c = mean(data)
+    ss = sum((x-c)**2 for x in data)
+    return ss
+
+def pstdev(data):
+    """Calculates the population standard deviation."""
+    n = len(data)
+    if n < 2:
+        raise ValueError('variance requires at least two data points')
+    ss = _ss(data)
+    pvar = ss/n # the population variance
+    return pvar**0.5
+
 # Begin main thread
 if __name__ == '__main__':
 
@@ -308,8 +339,7 @@ if __name__ == '__main__':
         name = os.path.basename(os.path.abspath(b)).split('.')[0]
         aligns[name] = {'align': pysam.AlignmentFile(b),
                         'read_count': None,
-                        'med': None,
-                        'regions': {}}
+                        'med': None}
 
     for k in parseConfig(args.kleats):
         kleat = parseKleat(k, with_pas=True, min_num_bridge_reads=2, min_bridge_read_tail_len=4)
@@ -353,8 +383,9 @@ if __name__ == '__main__':
             if (not annot[chrom][gene]):
                 continue
             results[chrom][gene] = {}
-            spaces = []
-            strand = None
+            #spaces = []
+            #strand = None
+            strand = annot[chrom][gene][0].strand
             gene_start = annot[chrom][gene][0].start
             gene_end = annot[chrom][gene][-1].end
             for a in aligns:
@@ -362,18 +393,18 @@ if __name__ == '__main__':
                 for read in aligns[a]['align'].fetch(chrom, gene_start, gene_end):
                     read_count += 1
                 aligns[a]['read_count'] = read_count
-            for i in xrange(1,len(annot[chrom][gene])):
-                strand = annot[chrom][gene][i].strand
-                dist = annot[chrom][gene][i].start - annot[chrom][gene][i-1].end
-                spaces.append(dist)
-            if not spaces:
-                continue
-            imax = spaces.index(max(spaces))
+#            for i in xrange(1,len(annot[chrom][gene])):
+#                strand = annot[chrom][gene][i].strand
+#                dist = annot[chrom][gene][i].start - annot[chrom][gene][i-1].end
+#                spaces.append(dist)
+#            if not spaces:
+#                continue
+#            imax = spaces.index(max(spaces))
             if strand == '-':
-                annot[chrom][gene] = annot[chrom][gene][:imax+1]
+#                annot[chrom][gene] = annot[chrom][gene][:imax+1]
                 annot[chrom][gene] = [annot[chrom][gene][0]]
             else:
-                annot[chrom][gene] = annot[chrom][gene][imax+1:]
+#                annot[chrom][gene] = annot[chrom][gene][imax+1:]
                 annot[chrom][gene] = [annot[chrom][gene][-1]]
             for region in annot[chrom][gene]:
                 last = region.start
@@ -388,52 +419,53 @@ if __name__ == '__main__':
                     if cs - last < 20:
                         continue
                     regions += ('\t').join([chrom, str(last), str(cs), '{}_utr_{}'.format(gene,sec), '0', region.strand, '\n'])
-                    x = []
+                    span = '{}-{}'.format(last,cs)
+                    results[chrom][gene][span] = {}
                     for a in aligns:
                         m = []
                         for p in aligns[a]['align'].pileup(chrom, last, cs):
                             m.append(p.nsegments)
                         m = sorted(m)
-                        x.append(m)
                         lenm = len(m)
+                        if lenm == 0:
+                            continue
                         #med = m[lenm/2]
                         med = sum(m)/lenm
                         med = float(med)/aligns[a]['read_count']
-                        aligns[a]['regions'][key] = med
-                        
+                        results[chrom][gene][span][a] = {'med': med,
+                                                         'read_count': aligns[a]['read_count']}
                     last = cs+1
                     sec += 1
-
-    #total = []
-    #for a in aligns:
-    print aligns   
-    total = []
-    lena = len(aligns)
-    keys = aligns.keys()
-    for region in aligns[keys[0]]['regions']:
-        for i in xrange(lena-1):
-            for j in xrange(i+1, lena):
-                distance = abs(aligns[keys[i]]['regions'][region] - aligns[keys[j]]['regions'][region])
-                if distance > 5e-5:
-                    print '{}\t{}\t{}\t{}'.format(gene,keys[i], keys[j], region)
-                #total.append(distance)
-
-    #print total
 
     regions = regions.strip()
 
     with open('./regions.bed', 'w') as f:
         f.write(regions)
 
+    #print results
 
-#    print results['chr3']['HEMK1']
-#    for chrom in results:
-#        for gene in results[chrom]:
-#            for region in results[chrom][gene]:
-#                mbg1 = results[chrom][gene][region][0]
-#                mbg2 = results[chrom][gene][region][1]
-#                if abs(mbg1 - mbg2) < 800:
-#                    continue
-#                print '{}\t{}'.format(gene, region)
-#                print '\tbg1: ' + str(mbg1)
-#                print '\tbg2: ' + str(mbg2)
+    all_dists = []
+    for chrom in results:
+        for gene in results[chrom]:
+            for span in results[chrom][gene]:
+                rcg = results[chrom][gene]
+                meds = [rcg[span][a]['med'] for a in rcg[span]]
+                all_dists += allDistances(meds)
+
+    stdev = pstdev(all_dists)
+    print 'Population STDEV: {}'.format(stdev)
+    for chrom in results:
+        #print chrom
+        for gene in results[chrom]:
+            #print '  ' + gene
+            for span in results[chrom][gene]:
+                #print '    ' + span
+                rcg = results[chrom][gene]
+                lenl = len(rcg)
+                keys = rcg[span].keys()
+                for i in xrange(lenl-1):
+                    for j in xrange(i,lenl):
+                        #print rcg[span]
+                        dist = abs(rcg[span][keys[i]]['med'] - rcg[span][keys[j]]['med'])
+                        if dist > stdev:
+                            print '{}\t{}\t{}\t{}\t{}\t{}'.format(chrom, gene, span, keys[i], keys[j], dist)
