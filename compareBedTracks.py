@@ -418,10 +418,10 @@ if __name__ == '__main__':
 #            imax = spaces.index(max(spaces))
             if strand == '-':
 #                annot[chrom][gene] = annot[chrom][gene][:imax+1]
-                annot[chrom][gene] = [annot[chrom][gene][:1]]
+                annot[chrom][gene] = annot[chrom][gene][:1]
             else:
 #                annot[chrom][gene] = annot[chrom][gene][imax+1:]
-                annot[chrom][gene] = [annot[chrom][gene][-2:]]
+                annot[chrom][gene] = annot[chrom][gene][-2:]
             for region in annot[chrom][gene]:
                 last = region.start
                 intervals = []
