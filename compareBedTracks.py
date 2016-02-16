@@ -315,6 +315,35 @@ def writeFile(path, name=None, *lines):
         f.write(('\n').join(lines))
     return result
 
+def computeRatios(dic, alns):
+    for a in alns:
+        for chrom in dic:
+            alns[a]['changes'][chrom] = {}
+            for gene in dic[chrom]:
+                #########################################
+                # REMOVE THE ENCLOSED CODE FOR ACTUAL RUN
+                if len(dic[chrom][gene]) > 2:
+                    continue
+                #########################################
+                alns[a]['changes'][chrom][gene] = []
+                for span in dic[chrom][gene]:
+                    try:
+                        alns[a]['changes'][chrom][gene].append(dic[chrom][gene][span][a]['med'])
+                    except KeyError as e:
+                        print chrom, gene, span, a
+                        print e
+                changes = alns[a]['changes'][chrom][gene]
+                dists = []
+                for i in xrange(len(changes)-1):
+                    try:
+                        dist = changes[i]/changes[i+1]
+                    except ZeroDivisionError:
+                        #dist = float('inf')
+                        continue
+                    #dist = abs(changes[i] - changes[i+1])
+                    dists.append(dist)
+                total = sum(dists)
+
 # Begin main thread
 if __name__ == '__main__':
 
@@ -351,7 +380,8 @@ if __name__ == '__main__':
         name = os.path.basename(os.path.abspath(b)).split('.')[0]
         aligns[name] = {'align': pysam.AlignmentFile(b),
                         'read_count': None,
-                        'med': None}
+                        'med': None,
+                        'changes': {}}
 
     for k in parseConfig(args.kleats):
         kleat = parseKleat(k, with_pas=True, min_num_bridge_reads=2, min_bridge_read_tail_len=4)
@@ -407,7 +437,8 @@ if __name__ == '__main__':
             for a in aligns:
                 read_count = 0
                 for read in aligns[a]['align'].fetch(chrom, gene_start, gene_end):
-                    read_count += 1
+                    if (gene_start <= read.pos <= gene_end):
+                        read_count += 1
                 aligns[a]['read_count'] = read_count
 #            for i in xrange(1,len(annot[chrom][gene])):
 #                strand = annot[chrom][gene][i].strand
@@ -449,13 +480,17 @@ if __name__ == '__main__':
                     for a in aligns:
                         m = []
                         for p in aligns[a]['align'].pileup(chrom, last, cs):
-                            m.append(p.nsegments)
+                            if (last <= p.pos <= cs):
+                                m.append(p.nsegments)
                         m = sorted(m)
                         lenm = len(m)
                         if lenm == 0:
                             continue
                         #med = m[lenm/2]
                         med = sum(m)/lenm
+                        if (aligns[a]['read_count'] == 0):
+                            print 'No reads: {}'.format(gene)
+                            continue
                         med = float(med)/aligns[a]['read_count']
                         results[chrom][gene][span][a] = {'med': med,
                                                          'read_count': aligns[a]['read_count']}
@@ -467,7 +502,71 @@ if __name__ == '__main__':
     writeFile(args.outdir, 'regions.bed', regions)
     writeFile(args.outdir, 'regions.fa', fasta)
 
-    #print results
+    print 'DONE'
+
+    computeRatios(results, aligns)
+#    print
+#    print results
+#    print
+#    print aligns
+
+    ratios = {}
+    for chrom in results:
+        ratios[chrom] = {}
+        for gene in results[chrom]:
+            ratios[chrom][gene] = {}
+            for a in aligns:
+                ratios[chrom][gene][a] = {'dists': [],
+                                          'total': None}
+                changes = aligns[a]['changes'][chrom][gene]
+                dists = []
+                for i in xrange(len(changes)-1):
+                    # UNDO COMMENT BELOW
+                    #dist = abs(changes[i] - changes[i+1])
+                    try:
+                        dist = changes[i]/changes[i+1]
+                    except ZeroDivisionError:
+                        continue
+                    ratios[chrom][gene][a]['dists'].append(dist)
+                total = sum(ratios[chrom][gene][a]['dists'])
+                ratios[chrom][gene][a]['total'] = total
+                #print '{}\t{}\t{}\t{}'.format(chrom,gene,a,total)
+
+    all_diffs = []
+    track = {}
+    for chrom in ratios:
+        track[chrom] = {}
+        for gene in ratios[chrom]:
+            track[chrom][gene] = {}
+            rcg = ratios[chrom][gene]
+            N = len(rcg)
+            samples = rcg.keys()
+            for i in xrange(N-1):
+                for j in xrange(i+1,N):
+                    diff = abs(rcg[samples[i]]['total'] - rcg[samples[j]]['total'])
+                    track[chrom][gene]['{}_&_{}'.format(samples[i],samples[j])] = diff
+                    all_diffs.append(diff)
+    
+    try:
+        stdev = pstdev(all_diffs)
+    except ValueError:
+        stdev = 0
+    print 'Population STDEV: {}'.format(stdev)
+
+    for chrom in track:
+        for gene in track[chrom]:
+            for comp in track[chrom][gene]:
+                diff = track[chrom][gene][comp]
+                if (diff >= stdev):
+                    print '{}\t{}\t{}\t{}'.format(chrom,gene,comp,diff)
+#    for chrom in ratios:
+#        for gene in ratios[chrom]:
+#            for a in aligns:
+#                total = ratios[chrom][gene][a]['total']
+#                if (total >= stdev):
+#                    print '{}\t{}\t{}\t{}'.format(chrom,gene,a,total)
+
+    sys.exit()
 
     print 'DONE'
     sys.stdout.write('Calculating population standard deviation...')
@@ -497,7 +596,7 @@ if __name__ == '__main__':
                 lenl = len(rcg[span])
                 keys = rcg[span].keys()
                 for i in xrange(lenl-1):
-                    for j in xrange(i,lenl):
+                    for j in xrange(i+1,lenl):
                         #print rcg[span]
                         dist = abs(rcg[span][keys[i]]['med'] - rcg[span][keys[j]]['med'])
                         print '{}\t{}\t{}\t{}\t{}\t{}'.format(chrom, gene, span, keys[i], keys[j], dist)
