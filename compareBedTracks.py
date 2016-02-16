@@ -514,11 +514,19 @@ if __name__ == '__main__':
     for chrom in results:
         ratios[chrom] = {}
         for gene in results[chrom]:
+            #########################################
+            # REMOVE THE ENCLOSED CODE FOR ACTUAL RUN
+            if len(results[chrom][gene]) > 2:
+                continue
+            #########################################
             ratios[chrom][gene] = {}
             for a in aligns:
                 ratios[chrom][gene][a] = {'dists': [],
                                           'total': None}
-                changes = aligns[a]['changes'][chrom][gene]
+                try:
+                    changes = aligns[a]['changes'][chrom][gene]
+                except KeyError:
+                    continue
                 dists = []
                 for i in xrange(len(changes)-1):
                     # UNDO COMMENT BELOW
@@ -531,6 +539,7 @@ if __name__ == '__main__':
                 total = sum(ratios[chrom][gene][a]['dists'])
                 ratios[chrom][gene][a]['total'] = total
                 #print '{}\t{}\t{}\t{}'.format(chrom,gene,a,total)
+    #print ratios
 
     all_diffs = []
     track = {}
