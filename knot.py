@@ -1,4 +1,5 @@
 import argparse, sys, os
+import cPickle as pickle
 from copy import deepcopy
 #from pybedtools import *
 import pysam
@@ -315,7 +316,27 @@ def writeFile(path, name=None, *lines):
         f.write(('\n').join(lines))
     return result
 
-def computeRatios(dic, alns):
+def computeRatios2(results, annot):
+	ratios = {}
+	for chrom in results:
+		for gene in results[chrom]:
+			if gene not in ratios:
+				ratios[gene] = {}
+			keys = results[chrom][gene].keys()
+			strand = annot[chrom][gene][0].strand
+			if strand == '+':
+				keys = sorted(keys, key=lambda x: int(x.split('-')[0]))
+			else:
+				keys = sorted(keys, key=lambda x: int(x.split('-')[0]), reverse=True)
+			for span in keys:
+				for align in results[chrom][gene][span]:
+					if align not in ratios[gene]:
+						ratios[gene][align] = [results[chrom][gene][span][align]['med']]
+					else:
+						ratios[gene][align].append(results[chrom][gene][span][align]['med'])
+	return ratios
+
+def computeRatios(dic, alns, annot):
     for a in alns:
         for chrom in dic:
             alns[a]['changes'][chrom] = {}
@@ -326,7 +347,13 @@ def computeRatios(dic, alns):
                     continue
                 #########################################
                 alns[a]['changes'][chrom][gene] = []
-                for span in dic[chrom][gene]:
+                strand = annot[chrom][gene][0].strand
+                keys = dic[chrom][gene].keys()
+                if strand == '+':
+                    keys = sorted(keys, key = lambda x: int(x.split('-')[0]))
+                else:
+                    keys = sorted(keys, key = lambda x: int(x.split('-')[0]), reverse=True)
+                for span in keys:
                     try:
                         alns[a]['changes'][chrom][gene].append(dic[chrom][gene][span][a]['med'])
                     except KeyError as e:
@@ -336,13 +363,85 @@ def computeRatios(dic, alns):
                 dists = []
                 for i in xrange(len(changes)-1):
                     try:
-                        dist = changes[i]/changes[i+1]
+                        dist = changes[i+1]/changes[i]
                     except ZeroDivisionError:
                         #dist = float('inf')
                         continue
                     #dist = abs(changes[i] - changes[i+1])
                     dists.append(dist)
                 total = sum(dists)
+
+def genResults(annot, kleats):
+    results = {}
+    fasta = regions = ''
+    for chrom in annot:
+        if chrom not in kleats:
+            continue
+        results[chrom] = {}
+        for gene in annot[chrom]:
+            if gene not in kleats[chrom]:
+                continue
+            if (not annot[chrom][gene]):
+                continue
+            results[chrom][gene] = {}
+            strand = annot[chrom][gene][0].strand
+            gene_start = annot[chrom][gene][0].start
+            gene_end = annot[chrom][gene][-1].end
+            for a in aligns:
+                read_count = 0
+                for read in aligns[a]['align'].fetch(chrom, gene_start, gene_end):
+                    if (gene_start <= read.pos <= gene_end):
+                        read_count += 1
+                aligns[a]['read_count'] = read_count
+            if strand == '-':
+                annot[chrom][gene] = annot[chrom][gene][:1]
+            else:
+                annot[chrom][gene] = annot[chrom][gene][-2:]
+            for region in annot[chrom][gene]:
+                last = region.start
+                intervals = []
+                splices = 0
+                cleaved = False
+                for k in kleats[chrom][gene]:
+                    if (region.start < k.cleavage_site < region.end):
+                        cleaved = True
+                if not cleaved:
+                    continue
+                for k in kleats[chrom][gene]:
+                    cs = k.cleavage_site
+                    key = '{}:{}-{}'.format(chrom,last,cs)
+                    if (cs > region.end):
+                        cs = region.end
+                        pass
+                    if cs - last < 20:
+                        continue
+                    regions += ('\t').join([chrom, str(last), str(cs), '{}_utr_{}'.format(gene,splices), '0', region.strand, '\n'])
+                    header = '>' + ('|').join([chrom, gene, str(last), str(cs), region.strand]) + '\n'
+                    seq = ref.fetch(chrom, last, cs).upper() + '\n'
+                    fasta += header + seq
+                    span = '{}-{}'.format(last,cs)
+                    results[chrom][gene][span] = {}
+                    for a in aligns:
+                        m = []
+                        for p in aligns[a]['align'].pileup(chrom, last, cs):
+                            if (last <= p.pos <= cs):
+                                m.append(p.nsegments)
+                        sm = sorted(m)
+                        lenm = len(sm)
+                        if lenm == 0:
+                            continue
+                        med = sm[lenm/2]
+                        #med = sum(m)/lenm
+                        if (aligns[a]['read_count'] == 0):
+                            print 'No reads: {}'.format(gene)
+                            continue
+                        #med = float(med)/aligns[a]['read_count']
+                        results[chrom][gene][span][a] = {'med': med,
+                                                         'read_count': aligns[a]['read_count'],
+                                                         'meds': m}
+                    last = cs+1
+                    splices += 1
+    return results, fasta, regions
 
 # Begin main thread
 if __name__ == '__main__':
@@ -419,193 +518,121 @@ if __name__ == '__main__':
     sys.stdout.write('Computing coverage of regions...')
     sys.stdout.flush()
 
-    for chrom in annot:
-        if chrom not in kleats:
-            continue
-        results[chrom] = {}
-        for gene in annot[chrom]:
-            if gene not in kleats[chrom]:
-                continue
-            if (not annot[chrom][gene]):
-                continue
-            results[chrom][gene] = {}
-            #spaces = []
-            #strand = None
-            strand = annot[chrom][gene][0].strand
-            gene_start = annot[chrom][gene][0].start
-            gene_end = annot[chrom][gene][-1].end
-            for a in aligns:
-                read_count = 0
-                for read in aligns[a]['align'].fetch(chrom, gene_start, gene_end):
-                    if (gene_start <= read.pos <= gene_end):
-                        read_count += 1
-                aligns[a]['read_count'] = read_count
-#            for i in xrange(1,len(annot[chrom][gene])):
-#                strand = annot[chrom][gene][i].strand
-#                dist = annot[chrom][gene][i].start - annot[chrom][gene][i-1].end
-#                spaces.append(dist)
-#            if not spaces:
+#    for chrom in annot:
+#        if chrom not in kleats:
+#            continue
+#        results[chrom] = {}
+#        for gene in annot[chrom]:
+#            if gene not in kleats[chrom]:
 #                continue
-#            imax = spaces.index(max(spaces))
-            if strand == '-':
-#                annot[chrom][gene] = annot[chrom][gene][:imax+1]
-                annot[chrom][gene] = annot[chrom][gene][:1]
-            else:
-#                annot[chrom][gene] = annot[chrom][gene][imax+1:]
-                annot[chrom][gene] = annot[chrom][gene][-2:]
-            for region in annot[chrom][gene]:
-                last = region.start
-                intervals = []
-                sec = 0
-                cleaved = False
-                for k in kleats[chrom][gene]:
-                    if (region.start < k.cleavage_site < region.end):
-                        cleaved = True
-                if not cleaved:
-                    continue
-                for k in kleats[chrom][gene]:
-                    cs = k.cleavage_site
-                    key = '{}:{}-{}'.format(chrom,last,cs)
-                    if (cs > region.end):
-                        cs = region.end
-                        pass
-                    if cs - last < 20:
-                        continue
-                    regions += ('\t').join([chrom, str(last), str(cs), '{}_utr_{}'.format(gene,sec), '0', region.strand, '\n'])
-                    header = '>' + ('|').join([chrom, gene, str(last), str(cs), region.strand]) + '\n'
-                    seq = ref.fetch(chrom, last, cs).upper() + '\n'
-                    fasta += header + seq
-                    span = '{}-{}'.format(last,cs)
-                    results[chrom][gene][span] = {}
-                    for a in aligns:
-                        m = []
-                        for p in aligns[a]['align'].pileup(chrom, last, cs):
-                            if (last <= p.pos <= cs):
-                                m.append(p.nsegments)
-                        m = sorted(m)
-                        lenm = len(m)
-                        if lenm == 0:
-                            continue
-                        #med = m[lenm/2]
-                        med = sum(m)/lenm
-                        if (aligns[a]['read_count'] == 0):
-                            print 'No reads: {}'.format(gene)
-                            continue
-                        med = float(med)/aligns[a]['read_count']
-                        results[chrom][gene][span][a] = {'med': med,
-                                                         'read_count': aligns[a]['read_count']}
-                    last = cs+1
-                    sec += 1
-
-    regions = regions.strip()
-
-    writeFile(args.outdir, 'regions.bed', regions)
-    writeFile(args.outdir, 'regions.fa', fasta)
-
-    print 'DONE'
-
-    computeRatios(results, aligns)
-#    print
-#    print results
-#    print
-#    print aligns
-
-    ratios = {}
-    for chrom in results:
-        ratios[chrom] = {}
-        for gene in results[chrom]:
-            #########################################
-            # REMOVE THE ENCLOSED CODE FOR ACTUAL RUN
-            if len(results[chrom][gene]) > 2:
-                continue
-            #########################################
-            ratios[chrom][gene] = {}
-            for a in aligns:
-                ratios[chrom][gene][a] = {'dists': [],
-                                          'total': None}
-                try:
-                    changes = aligns[a]['changes'][chrom][gene]
-                except KeyError:
-                    continue
-                dists = []
-                for i in xrange(len(changes)-1):
-                    # UNDO COMMENT BELOW
-                    #dist = abs(changes[i] - changes[i+1])
-                    try:
-                        dist = changes[i]/changes[i+1]
-                    except ZeroDivisionError:
-                        continue
-                    ratios[chrom][gene][a]['dists'].append(dist)
-                total = sum(ratios[chrom][gene][a]['dists'])
-                ratios[chrom][gene][a]['total'] = total
-                #print '{}\t{}\t{}\t{}'.format(chrom,gene,a,total)
-    #print ratios
-
-    all_diffs = []
-    track = {}
-    for chrom in ratios:
-        track[chrom] = {}
-        for gene in ratios[chrom]:
-            track[chrom][gene] = {}
-            rcg = ratios[chrom][gene]
-            N = len(rcg)
-            samples = rcg.keys()
-            for i in xrange(N-1):
-                for j in xrange(i+1,N):
-                    diff = abs(rcg[samples[i]]['total'] - rcg[samples[j]]['total'])
-                    track[chrom][gene]['{}_&_{}'.format(samples[i],samples[j])] = diff
-                    all_diffs.append(diff)
-    
-    try:
-        stdev = pstdev(all_diffs)
-    except ValueError:
-        stdev = 0
-    print 'Population STDEV: {}'.format(stdev)
-
-    for chrom in track:
-        for gene in track[chrom]:
-            for comp in track[chrom][gene]:
-                diff = track[chrom][gene][comp]
-                if (diff >= stdev):
-                    print '{}\t{}\t{}\t{}'.format(chrom,gene,comp,diff)
-#    for chrom in ratios:
-#        for gene in ratios[chrom]:
+#            if (not annot[chrom][gene]):
+#                continue
+#            results[chrom][gene] = {}
+#            #spaces = []
+#            #strand = None
+#            strand = annot[chrom][gene][0].strand
+#            gene_start = annot[chrom][gene][0].start
+#            gene_end = annot[chrom][gene][-1].end
 #            for a in aligns:
-#                total = ratios[chrom][gene][a]['total']
-#                if (total >= stdev):
-#                    print '{}\t{}\t{}\t{}'.format(chrom,gene,a,total)
+#                read_count = 0
+#                for read in aligns[a]['align'].fetch(chrom, gene_start, gene_end):
+#                    if (gene_start <= read.pos <= gene_end):
+#                        read_count += 1
+#                aligns[a]['read_count'] = read_count
+##            for i in xrange(1,len(annot[chrom][gene])):
+##                strand = annot[chrom][gene][i].strand
+##                dist = annot[chrom][gene][i].start - annot[chrom][gene][i-1].end
+##                spaces.append(dist)
+##            if not spaces:
+##                continue
+##            imax = spaces.index(max(spaces))
+#            if strand == '-':
+##                annot[chrom][gene] = annot[chrom][gene][:imax+1]
+#                annot[chrom][gene] = annot[chrom][gene][:1]
+#            else:
+##                annot[chrom][gene] = annot[chrom][gene][imax+1:]
+#                annot[chrom][gene] = annot[chrom][gene][-2:]
+#            for region in annot[chrom][gene]:
+#                last = region.start
+#                intervals = []
+#                sec = 0
+#                cleaved = False
+#                for k in kleats[chrom][gene]:
+#                    if (region.start < k.cleavage_site < region.end):
+#                        cleaved = True
+#                if not cleaved:
+#                    continue
+#                for k in kleats[chrom][gene]:
+#                    cs = k.cleavage_site
+#                    key = '{}:{}-{}'.format(chrom,last,cs)
+#                    if (cs > region.end):
+#                        cs = region.end
+#                        pass
+#                    if cs - last < 20:
+#                        continue
+#                    regions += ('\t').join([chrom, str(last), str(cs), '{}_utr_{}'.format(gene,sec), '0', region.strand, '\n'])
+#                    header = '>' + ('|').join([chrom, gene, str(last), str(cs), region.strand]) + '\n'
+#                    seq = ref.fetch(chrom, last, cs).upper() + '\n'
+#                    fasta += header + seq
+#                    span = '{}-{}'.format(last,cs)
+#                    results[chrom][gene][span] = {}
+#                    for a in aligns:
+#                        m = []
+#                        for p in aligns[a]['align'].pileup(chrom, last, cs):
+#                            if (last <= p.pos <= cs):
+#                                m.append(p.nsegments)
+#                        m = sorted(m)
+#                        lenm = len(m)
+#                        if lenm == 0:
+#                            continue
+#                        #med = m[lenm/2]
+#                        med = sum(m)/lenm
+#                        if (aligns[a]['read_count'] == 0):
+#                            print 'No reads: {}'.format(gene)
+#                            continue
+#                        med = float(med)/aligns[a]['read_count']
+#                        results[chrom][gene][span][a] = {'med': med,
+#                                                         'read_count': aligns[a]['read_count']}
+#                    last = cs+1
+#                    sec += 1
+#
+    saved = os.path.join(args.outdir, 'results.dump')
+    if not os.path.isfile(saved):
+        results, fasta, regions = genResults(annot,kleats)
+        writeFile(args.outdir, 'regions.bed', regions)
+        writeFile(args.outdir, 'regions.fa', fasta)
+        pickle.dump(results, open(saved, 'wb'))
+    else:
+        results = pickle.load(open(saved, 'rb'))
 
-    sys.exit()
+    #regions = regions.strip()
+
+    #writeFile(args.outdir, 'regions.bed', regions)
+    #writeFile(args.outdir, 'regions.fa', fasta)
 
     print 'DONE'
-    sys.stdout.write('Calculating population standard deviation...')
-    sys.stdout.flush()
 
-    all_dists = []
-    for chrom in results:
-        for gene in results[chrom]:
-            for span in results[chrom][gene]:
-                rcg = results[chrom][gene]
-                meds = [rcg[span][a]['med'] for a in rcg[span]]
-                all_dists += allDistances(meds)
+    #computeRatios(results, aligns, annot)
+    ratios = computeRatios2(results, annot)
 
-    print 'DONE'
-    print 'Identifying significant variation...'
-    sys.stdout.flush()
+    ratios_path = os.path.join(args.outdir, 'ratios.dump')
+    if not os.path.isfile(ratios_path):
+        pickle.dump(ratios, open(ratios_path, 'wb'))
+    else:
+        ratios = pickle.load(open(ratios_path, 'rb'))
 
-    stdev = pstdev(all_dists)
-    print 'Population STDEV: {}'.format(stdev)
-    for chrom in results:
-        #print chrom
-        for gene in results[chrom]:
-            #print '  ' + gene
-            for span in results[chrom][gene]:
-                #print '    ' + span
-                rcg = results[chrom][gene]
-                lenl = len(rcg[span])
-                keys = rcg[span].keys()
-                for i in xrange(lenl-1):
-                    for j in xrange(i+1,lenl):
-                        #print rcg[span]
-                        dist = abs(rcg[span][keys[i]]['med'] - rcg[span][keys[j]]['med'])
-                        print '{}\t{}\t{}\t{}\t{}\t{}'.format(chrom, gene, span, keys[i], keys[j], dist)
+    ratios_human_path = os.path.join(args.outdir, 'ratios')
+    with open(ratios_human_path, 'w') as f:
+        for c in results:
+            for g in results[c]:
+                if g not in ratios:
+                    continue
+                for a in ratios[g]:
+#                    try:
+#                        annot[c][g][0].strand
+#                    except KeyError:
+#                        print c, g, annot
+                    try:
+                        f.write('{}\t{}\t{}\t{}\t{}\n'.format(c,g,annot[c][g][0].strand,a,(',').join([str(x) for x in ratios[g][a]])))
+                    except KeyError:
+                        print c, g
