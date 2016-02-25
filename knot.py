@@ -448,8 +448,6 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description="Compare two bedgraph tracks")
     
-#    parser.add_argument('bg1', help='First bedgraph file')
-#    parser.add_argument('bg2', help='Second bedgraph file')
     parser.add_argument('annotation', help='Genome annotation file if GTF format')
     parser.add_argument('kleats', help='File containing list of kleat output files to use')
     parser.add_argument('alignments', help='File containing list of alignment output files to use. Must be in BAM or SAM format. Names of each BAM/SAM file must also differ')
@@ -460,16 +458,6 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     ref = pysam.FastaFile(args.reference)
-#    try:
-#        bg1 = pysam.TabixFile(args.bg1)
-#    except IOError:
-#        pysam.tabix_index(args.bg1, seq_col=0, start_col=1, end_col=2)
-#        bg1 = pysam.TabixFile(args.bg1)
-#    try:
-#        bg2 = pysam.TabixFile(args.bg2)
-#    except IOError:
-#        pysam.tabix_index(args.bg2, seq_col=0, start_col=1, end_col=2)
-#        bg2 = pysam.TabixFile(args.bg2)
 
     all_kleats = []
 
@@ -495,14 +483,9 @@ if __name__ == '__main__':
             sites = kleats[chrom][gene]
             sites = kleatLinkage(sites, args.cluster_window)
 
-#    print 'cs\tlen_t_con\tno_tai_rds\tno_br_rds\tmax_br_tai_len\ttai+br_rds\tpas'
-#    for k in kleats['chr3']['HEMK1']:
-#        print '{}\t{}\t{}\t{}\t{}\t{}\t{}'.format(k.cleavage_site, k.length_of_tail_in_contig, k.number_of_tail_reads, k.number_of_bridge_reads, k.max_bridge_read_tail_length, k.tail_and_bridge_reads, k.pas)
-
     sys.stdout.write('Parsing GTF...')
     sys.stdout.flush()
     annot = parseGTF(args.annotation, seqnames=['chr{}'.format(x) for x in range(1,23)] + ['chrX', 'chrY'], sources=['protein_coding'], features='UTR')
-    #annot = pysam.TabixFile(args.annotation, parser=asGTF)
     print 'DONE'
 
     sys.stdout.write('Grouping GTF...')
@@ -518,84 +501,6 @@ if __name__ == '__main__':
     sys.stdout.write('Computing coverage of regions...')
     sys.stdout.flush()
 
-#    for chrom in annot:
-#        if chrom not in kleats:
-#            continue
-#        results[chrom] = {}
-#        for gene in annot[chrom]:
-#            if gene not in kleats[chrom]:
-#                continue
-#            if (not annot[chrom][gene]):
-#                continue
-#            results[chrom][gene] = {}
-#            #spaces = []
-#            #strand = None
-#            strand = annot[chrom][gene][0].strand
-#            gene_start = annot[chrom][gene][0].start
-#            gene_end = annot[chrom][gene][-1].end
-#            for a in aligns:
-#                read_count = 0
-#                for read in aligns[a]['align'].fetch(chrom, gene_start, gene_end):
-#                    if (gene_start <= read.pos <= gene_end):
-#                        read_count += 1
-#                aligns[a]['read_count'] = read_count
-##            for i in xrange(1,len(annot[chrom][gene])):
-##                strand = annot[chrom][gene][i].strand
-##                dist = annot[chrom][gene][i].start - annot[chrom][gene][i-1].end
-##                spaces.append(dist)
-##            if not spaces:
-##                continue
-##            imax = spaces.index(max(spaces))
-#            if strand == '-':
-##                annot[chrom][gene] = annot[chrom][gene][:imax+1]
-#                annot[chrom][gene] = annot[chrom][gene][:1]
-#            else:
-##                annot[chrom][gene] = annot[chrom][gene][imax+1:]
-#                annot[chrom][gene] = annot[chrom][gene][-2:]
-#            for region in annot[chrom][gene]:
-#                last = region.start
-#                intervals = []
-#                sec = 0
-#                cleaved = False
-#                for k in kleats[chrom][gene]:
-#                    if (region.start < k.cleavage_site < region.end):
-#                        cleaved = True
-#                if not cleaved:
-#                    continue
-#                for k in kleats[chrom][gene]:
-#                    cs = k.cleavage_site
-#                    key = '{}:{}-{}'.format(chrom,last,cs)
-#                    if (cs > region.end):
-#                        cs = region.end
-#                        pass
-#                    if cs - last < 20:
-#                        continue
-#                    regions += ('\t').join([chrom, str(last), str(cs), '{}_utr_{}'.format(gene,sec), '0', region.strand, '\n'])
-#                    header = '>' + ('|').join([chrom, gene, str(last), str(cs), region.strand]) + '\n'
-#                    seq = ref.fetch(chrom, last, cs).upper() + '\n'
-#                    fasta += header + seq
-#                    span = '{}-{}'.format(last,cs)
-#                    results[chrom][gene][span] = {}
-#                    for a in aligns:
-#                        m = []
-#                        for p in aligns[a]['align'].pileup(chrom, last, cs):
-#                            if (last <= p.pos <= cs):
-#                                m.append(p.nsegments)
-#                        m = sorted(m)
-#                        lenm = len(m)
-#                        if lenm == 0:
-#                            continue
-#                        #med = m[lenm/2]
-#                        med = sum(m)/lenm
-#                        if (aligns[a]['read_count'] == 0):
-#                            print 'No reads: {}'.format(gene)
-#                            continue
-#                        med = float(med)/aligns[a]['read_count']
-#                        results[chrom][gene][span][a] = {'med': med,
-#                                                         'read_count': aligns[a]['read_count']}
-#                    last = cs+1
-#                    sec += 1
-#
     saved = os.path.join(args.outdir, 'results.dump')
     if not os.path.isfile(saved):
         results, fasta, regions = genResults(annot,kleats)
@@ -605,14 +510,8 @@ if __name__ == '__main__':
     else:
         results = pickle.load(open(saved, 'rb'))
 
-    #regions = regions.strip()
-
-    #writeFile(args.outdir, 'regions.bed', regions)
-    #writeFile(args.outdir, 'regions.fa', fasta)
-
     print 'DONE'
 
-    #computeRatios(results, aligns, annot)
     ratios = computeRatios2(results, annot)
 
     ratios_path = os.path.join(args.outdir, 'ratios.dump')
@@ -628,10 +527,6 @@ if __name__ == '__main__':
                 if g not in ratios:
                     continue
                 for a in ratios[g]:
-#                    try:
-#                        annot[c][g][0].strand
-#                    except KeyError:
-#                        print c, g, annot
                     try:
                         f.write('{}\t{}\t{}\t{}\t{}\n'.format(c,g,annot[c][g][0].strand,a,(',').join([str(x) for x in ratios[g][a]])))
                     except KeyError:
