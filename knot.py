@@ -405,6 +405,7 @@ def genResults(annot, kleats):
             if (not annot[chrom][gene]):
                 continue
             results[chrom][gene] = {}
+            print gene
             strand = annot[chrom][gene][0].strand
             gene_start = annot[chrom][gene][0].start
             gene_end = annot[chrom][gene][-1].end
@@ -457,7 +458,7 @@ def genResults(annot, kleats):
                                 m.append(p.nsegments)
                         sm = sorted(m)
                         lenm = len(sm)
-                        if lenm == 0:
+                        if lenm <= 1:
                             continue
                         _min = sm[0]
                         _max = sm[-1]
@@ -468,7 +469,6 @@ def genResults(annot, kleats):
                         temp.append([gene,strand,a,key,lenm,_min,q1,med,q3,_max,_mean,se])
                         #med = sum(m)/lenm
                         if (aligns[a]['read_count'] == 0):
-                            print 'No reads: {}'.format(gene)
                             continue
                         #med = float(med)/aligns[a]['read_count']
                         results[chrom][gene][span][a] = {'med': med,
@@ -486,6 +486,10 @@ def genResults(annot, kleats):
 def calcMedian(lst):
     sortedLst = sorted(lst)
     lstLen = len(lst)
+    if lstLen == 0:
+        return None
+    elif lstLen == 1:
+        return lst[0]
     index = (lstLen - 1) // 2
     if (lstLen % 2):
         return sortedLst[index]
@@ -554,15 +558,13 @@ if __name__ == '__main__':
     annot = groupGTF(annot)
     print 'DONE'
 
-    #print ('\t').join(['GENE','STRAND','SAMPLE','REGION','LENGTH','MIN','Q1','MED','Q3','MAX','MEAN','SE'])
-    #print ('\n').join(data)
-
     regions = ''
     fasta = ''
 
     results = {}
 
     saved = os.path.join(args.outdir, 'results.dump')
+
     if not args.load:
         sprint('Computing results ...')
         results, fasta, regions, stats = genResults(annot,kleats)
