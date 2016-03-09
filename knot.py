@@ -1,4 +1,5 @@
 import argparse, sys, os, math
+import colorsys
 import cPickle as pickle
 from copy import deepcopy
 #from pybedtools import *
@@ -273,8 +274,8 @@ def genTrackLine(name, description=None, _type=None, visibility=2, color=None):
     if visibility:
         result.append('visibility="{}"'.format(visibility))
     if color:
-        result.append('color="{}"'.format(color))
-    return 'track ' + (' ').join(result) + '\n'
+        result.append('color="{}"'.format((',').join([str(x) for x in color])))
+    return 'track ' + (' ').join(result)
 
 def allDistances(_list):
     result = []
@@ -326,24 +327,68 @@ def writeFile(path, name=None, *lines):
     return result
 
 def computeRatios2(results, annot):
-	ratios = {}
-	for chrom in results:
-		for gene in results[chrom]:
-			if gene not in ratios:
-				ratios[gene] = {}
-			keys = results[chrom][gene].keys()
-			strand = annot[chrom][gene][0].strand
-			if strand == '+':
-				keys = sorted(keys, key=lambda x: int(x.split('-')[0]))
-			else:
-				keys = sorted(keys, key=lambda x: int(x.split('-')[0]), reverse=True)
-			for span in keys:
-				for align in results[chrom][gene][span]:
-					if align not in ratios[gene]:
-						ratios[gene][align] = [results[chrom][gene][span][align]['med']]
-					else:
-						ratios[gene][align].append(results[chrom][gene][span][align]['med'])
-	return ratios
+    ratios = {}
+    output = []
+    for chrom in results:
+        for gene in results[chrom]:
+            if gene not in ratios:
+                ratios[gene] = {}
+            keys = results[chrom][gene].keys()
+            strand = annot[chrom][gene][0].strand
+            if strand == '+':
+                keys = sorted(keys, key=lambda x: int(x.split('-')[0]))
+            else:
+                keys = sorted(keys, key=lambda x: int(x.split('-')[0]), reverse=True)
+            for span in keys:
+                for align in results[chrom][gene][span]:
+                    if align not in ratios[gene]:
+                        ratios[gene][align] = {'med': [results[chrom][gene][span][align]['med']],'avg': [results[chrom][gene][span][align]['avg']]}
+                    else:
+                        ratios[gene][align]['med'].append(results[chrom][gene][span][align]['med'])
+                        ratios[gene][align]['avg'].append(results[chrom][gene][span][align]['avg'])
+            samples = {}
+            for s in ratios[gene]:
+                for i in xrange(len(keys)-1):
+                    for j in xrange(i+1,len(keys)):
+                        med_i = ratios[gene][s]['med'][i]
+                        avg_i = ratios[gene][s]['avg'][i]
+                        med_j = ratios[gene][s]['med'][j]
+                        avg_j = ratios[gene][s]['avg'][j]
+                        avg_ratio = float(avg_j)/avg_i
+                        med_ratio = float(med_j)/med_i
+                        if s not in samples:
+                            samples[s] = {'chrom': chrom,
+                                          'gene': gene,
+                                          'avg_ratios':[avg_ratio],
+                                          'med_ratios':[med_ratio],
+                                          'regions': keys}
+            output.append(samples)
+    return output
+
+def interpretRatios(data):
+    diffs = []
+    for item in data:
+        samples = item.keys()
+        for i in xrange(len(samples)-1):
+            for j in xrange(i+1,len(samples)):
+                for reg in xrange(len(item[samples[i]]['regions'])-1):
+                    avg_ratios_i = item[samples[i]]['avg_ratios'][reg]
+                    avg_ratios_j = item[samples[j]]['avg_ratios'][reg]
+                    med_ratios_i = item[samples[i]]['med_ratios'][reg]
+                    med_ratios_j = item[samples[j]]['med_ratios'][reg]
+                    avg_diff = abs(avg_ratios_i - avg_ratios_j)
+                    med_diff = abs(med_ratios_i - med_ratios_j)
+                    thing = {'chrom': item[samples[i]]['chrom'],
+                             'gene': item[samples[i]]['gene'],
+                             'sample_i': samples[i],
+                             'sample_j': samples[j],
+                             'avg_diff': avg_diff,
+                             'med_diff': med_diff,
+                             'region': item[samples[i]]['regions'][reg]}
+                    diffs.append(thing)
+    #avg_stdev = np.std([x['avg_diff'] for x in diffs],ddof=1)
+    #med_stdev = np.std([x['med_diff'] for x in diffs],ddof=1)
+    return diffs
 
 def analyzeRatios(ratios):
     results = {}
@@ -456,6 +501,7 @@ def genResults(annot, kleats):
                         for p in aligns[a]['align'].pileup(chrom, r[0], r[1]):
                             if (r[0] <= p.pos <= r[1]):
                                 m.append(p.nsegments)
+                                aligns[a]['bg'].append('{}\t{}\t{}\t{}'.format(chrom,p.pos,p.pos+1,p.nsegments))
                         sm = sorted(m)
                         lenm = len(sm)
                         if lenm <= 1:
@@ -464,16 +510,11 @@ def genResults(annot, kleats):
                         _max = sm[-1]
                         med = calcMedian(sm)
                         q1, q3 = calcIQR(sm)
-                        _mean = sum(sm)/lenm
+                        avg = sum(sm)/float(lenm)
                         se = sstdev(sm)/math.sqrt(lenm)
-                        temp.append([gene,strand,a,key,lenm,_min,q1,med,q3,_max,_mean,se])
-                        #med = sum(m)/lenm
-                        if (aligns[a]['read_count'] == 0):
-                            continue
-                        #med = float(med)/aligns[a]['read_count']
+                        temp.append([gene,strand,a,key,lenm,_min,q1,med,q3,_max,avg,se])
                         results[chrom][gene][span][a] = {'med': med,
-                                                         'read_count': aligns[a]['read_count'],
-                                                         'meds': m}
+                                                         'avg': avg}
                 if strand == '+':
                     temp = sorted(temp, key=lambda x: int(x[3].split(':')[1].split('-')[0]))
                 else:
@@ -533,11 +574,20 @@ if __name__ == '__main__':
     aligns = {}
 
     for b in parseConfig(args.alignments):
-        name = os.path.basename(os.path.abspath(b)).split('.')[0]
-        aligns[name] = {'align': pysam.AlignmentFile(b),
-                        'read_count': None,
-                        'med': None,
-                        'changes': {}}
+        name,ftype = os.path.splitext(os.path.abspath(b))
+        name = os.path.basename(name)
+        if ftype == 'cram':
+            aligns[name] = {'align': pysam.AlignmentFile(b, 'rc'),'bg': None}
+        else:
+            aligns[name] = {'align': pysam.AlignmentFile(b, 'rb'),'bg': None}
+
+    N = len(aligns)
+    HSV_tuples = [(x*1.0/N, 0.5, 0.5) for x in range(N)]
+    RGB_tuples = map(lambda x: colorsys.hsv_to_rgb(*x), HSV_tuples)
+    RGB_tuples = map(lambda x: [255*y for y in x],RGB_tuples)
+
+    for i,name in enumerate(aligns):
+        aligns[name]['bg'] = [genTrackLine(name+'.bg', name+'.bg', 'bedGraph', color=RGB_tuples[i])]
 
     for k in parseConfig(args.kleats):
         kleat = parseKleat(k, with_pas=True, min_num_bridge_reads=2, min_bridge_read_tail_len=4)
@@ -579,6 +629,9 @@ if __name__ == '__main__':
     else:
         results = pickle.load(open(saved, 'rb'))
 
+    for a in aligns:
+        writeFile(args.outdir, a+'.bg', *aligns[a]['bg'])
+
     ratios = computeRatios2(results, annot)
 
     ratios_path = os.path.join(args.outdir, 'ratios.dump')
@@ -589,13 +642,33 @@ if __name__ == '__main__':
         ratios = pickle.load(open(ratios_path, 'rb'))
 
     ratios_human_path = os.path.join(args.outdir, 'ratios')
-    with open(ratios_human_path, 'w') as f:
-        for c in results:
-            for g in results[c]:
-                if g not in ratios:
-                    continue
-                for a in ratios[g]:
-                    try:
-                        f.write('{}\t{}\t{}\t{}\t{}\n'.format(c,g,annot[c][g][0].strand,a,(',').join([str(x) for x in ratios[g][a]])))
-                    except KeyError:
-                        print c, g
+
+    diffs = interpretRatios(ratios)
+
+    to_write = []
+
+    try:
+        avg_stdev = sstdev([x['avg_diff'] for x in diffs])
+        med_stdev = sstdev([x['med_diff'] for x in diffs])
+    except ValueError:
+        avg_stdev = None
+        med_stdev = None
+    for i in diffs:
+        reg = i['chrom'] + ':' + i['region']
+        if i['avg_diff'] >= avg_stdev or not avg_stdev:
+            to_write.append('AVG\t{}\t{}\t{}\t{}'.format(reg,i['gene'],i['sample_i'],i['sample_j']))
+        if i['med_diff'] >= med_stdev or not med_stdev:
+            to_write.append('MED\t{}\t{}\t{}\t{}'.format(reg,i['gene'],i['sample_i'],i['sample_j']))
+
+    writeFile(args.outdir, 'significant.knot', *to_write)
+#    with open(ratios_human_path, 'w') as f:
+#        f.write('CHROM\tGENE\tSTRAND\tSAMPLE\tMEDIANS\tAVERAGES\n')
+#        for c in results:
+#            for g in results[c]:
+#                if g not in ratios:
+#                    continue
+#                for a in ratios[g]:
+#                    try:
+#                        f.write('{}\t{}\t{}\t{}\t{}\t{}\n'.format(c,g,annot[c][g][0].strand,a,(',').join([str(x) for x in ratios[g][a]['med']]),(',').join([str(x) for x in ratios[g][a]['avg']])))
+#                    except KeyError:
+#                        print c, g
