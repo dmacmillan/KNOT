@@ -154,7 +154,6 @@ def clsGTF(grouped):
                'ii': set(),
                'iii': set()}
     for c in grouped:
-        print c
         intervals = []
         for g in grouped[c]:
             #for gtf in grouped[c][g]:
@@ -476,14 +475,14 @@ def genResults(annot, kleats, cls):
             results[chrom][gene] = {}
             print gene
             strand = annot[chrom][gene][0].strand
-            gene_start = annot[chrom][gene][0].start
-            gene_end = annot[chrom][gene][-1].end
-            for a in aligns:
-                read_count = 0
-                for read in aligns[a]['align'].fetch(chrom, gene_start, gene_end):
-                    if (gene_start <= read.pos <= gene_end):
-                        read_count += 1
-                aligns[a]['read_count'] = read_count
+#            gene_start = annot[chrom][gene][0].start
+#            gene_end = annot[chrom][gene][-1].end
+#            for a in aligns:
+#                read_count = 0
+#                for read in aligns[a]['align'].fetch(chrom, gene_start, gene_end):
+#                    if (gene_start <= read.pos <= gene_end):
+#                        read_count += 1
+#                aligns[a]['read_count'] = read_count
             if strand == '-':
                 annot[chrom][gene] = annot[chrom][gene][:1]
             else:
