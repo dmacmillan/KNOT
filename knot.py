@@ -149,6 +149,28 @@ def parseGTF(gtffile, seqnames=None, sources=None, features=None , not_sources=N
     f.close()
     return results
 
+def clsGTF(grouped):
+    classes = {'i': set(),
+               'ii': set(),
+               'iii': set()}
+    for c in grouped:
+        print c
+        intervals = []
+        for g in grouped[c]:
+            #for gtf in grouped[c][g]:
+            strand = grouped[c][g][0].strand
+            if strand == '-':
+                grouped[c][g] = grouped[c][g][::-1]
+            intervals.append(grouped[c][g][-1])
+        intervals.sort(key=lambda x: x.start)
+        for i in xrange(len(intervals)-1):
+            for j in xrange(i+1, len(intervals)):
+                if intervals[j].start > intervals[i].end:
+                    continue
+                classes['ii'].add(intervals[j].attribute['gene_name'])
+                classes['ii'].add(intervals[i].attribute['gene_name'])
+    return classes
+
 def mergeGTFList(gtf_list):
     res = [gtf_list[0]]
     for i in xrange(1,len(gtf_list)):
@@ -436,7 +458,7 @@ def computeRatios(dic, alns, annot):
                     dists.append(dist)
                 total = sum(dists)
 
-def genResults(annot, kleats):
+def genResults(annot, kleats, cls):
     results = {}
     fasta = regions = ''
     data = [('\t').join(['GENE','STRAND','SAMPLE','REGION','LENGTH','MIN','Q1','MED','Q3','MAX','MEAN','SE'])]
@@ -448,6 +470,8 @@ def genResults(annot, kleats):
             if gene not in kleats[chrom]:
                 continue
             if (not annot[chrom][gene]):
+                continue
+            if gene in cls['ii']:
                 continue
             results[chrom][gene] = {}
             print gene
@@ -606,6 +630,7 @@ if __name__ == '__main__':
     annot = parseGTF(args.annotation, seqnames=['chr{}'.format(x) for x in range(1,23)] + ['chrX', 'chrY'], sources=['protein_coding'], features='UTR')
 
     annot = groupGTF(annot)
+    cls = clsGTF(annot)
     print 'DONE'
 
     regions = ''
@@ -617,7 +642,7 @@ if __name__ == '__main__':
 
     if not args.load:
         sprint('Computing results ...')
-        results, fasta, regions, stats = genResults(annot,kleats)
+        results, fasta, regions, stats = genResults(annot,kleats,cls)
         print 'DONE'
         path = writeFile(args.outdir, 'regions.bed', regions)
         print 'regions.bed -> {}'.format(path)
