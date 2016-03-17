@@ -267,8 +267,26 @@ def mergeKleatResults(sites):
     res.max_bridge_read_tail_length = d['max_len_br']
     return res
 
+def iterKleatLinkage(sites, window=20):
+    length = len(sites)
+    i = 0
+    while i < length - 1:
+        j = i + 1
+        while j < length:
+            if sites[j] - sites[i] < window:
+                sites[i] = (sites[j] + sites[i]) / 2
+                print i,j
+                print 'merged!'
+                print sites
+                #sites[i] = mergeKleatResults(sites[i],sites[j])
+                i -= 1
+            j += 1
+        i += 1
+    return sites
+
 def kleatLinkage(sites, window=20):
     length = len(sites)
+    #print length
     if length > 1:
         _min = float('inf')
         r = s = None
@@ -347,11 +365,34 @@ def writeFile(path, name=None, *lines):
         f.write(('\n').join(lines))
     return result
 
+def computeRatios(results, annot):
+    output = []
+    for c in results:
+        for g in results[c]:
+            gene = {g: {}}
+            strand = annot[c][g][0].strand
+            regions = sorted(results[c][g].keys(), key=lambda x: int(x.split('-')[0]))
+            if strand == '-':
+                regions = regions[::-1]
+            for r in regions:
+                for s in results[c][g][r]:
+                    med = results[c][g][r][s]['med']
+                    avg = results[c][g][r][s]['avg']
+                    if s not in gene[g]:
+                        gene[g][s] = {'meds': [med], 'avgs': [avg]}
+                    else:
+                        gene[g][s]['meds'].append(med)
+                        gene[g][s]['avgs'].append(avg)
+            if g == 'PLS3':
+                print gene
+
 def computeRatios2(results, annot):
     ratios = {}
-    output = []
+    output = {}
     for chrom in results:
+        output[chrom] = {}
         for gene in results[chrom]:
+            output[chrom][gene] = {}
             if gene not in ratios:
                 ratios[gene] = {}
             keys = results[chrom][gene].keys()
@@ -367,10 +408,13 @@ def computeRatios2(results, annot):
                     else:
                         ratios[gene][align]['med'].append(results[chrom][gene][span][align]['med'])
                         ratios[gene][align]['avg'].append(results[chrom][gene][span][align]['avg'])
-            samples = {}
+            samples = output[chrom][gene]
             for s in ratios[gene]:
-                for i in xrange(len(keys)-1):
-                    for j in xrange(i+1,len(keys)):
+                length = len(ratios[gene][s]['med'])
+                if length <= 1:
+                    continue
+                for i in xrange(length-1):
+                    for j in xrange(i+1,length):
                         med_i = ratios[gene][s]['med'][i]
                         avg_i = ratios[gene][s]['avg'][i]
                         med_j = ratios[gene][s]['med'][j]
@@ -378,13 +422,22 @@ def computeRatios2(results, annot):
                         avg_ratio = float(avg_j)/avg_i
                         med_ratio = float(med_j)/med_i
                         if s not in samples:
-                            samples[s] = {'chrom': chrom,
-                                          'gene': gene,
-                                          'avg_ratios':[avg_ratio],
+                            samples[s] = {'avg_ratios':[avg_ratio],
                                           'med_ratios':[med_ratio],
                                           'regions': keys}
-            output.append(samples)
+                        else:
+                            samples[s]['avg_ratios'].append(avg_ratio)
+                            samples[s]['med_ratios'].append(med_ratio)
+            #output.append(samples)
     return output
+
+def interpretRatios2(ratios):
+    results = {}
+    for chrom in ratios:
+        for gene in ratios[chrom]:
+            c = ratios[chrom][gene]
+            if len(set([len(c[s]['med_ratios']) for s in c])) != 1:
+                continue
 
 def interpretRatios(data):
     diffs = []
@@ -393,20 +446,23 @@ def interpretRatios(data):
         for i in xrange(len(samples)-1):
             for j in xrange(i+1,len(samples)):
                 for reg in xrange(len(item[samples[i]]['regions'])-1):
-                    avg_ratios_i = item[samples[i]]['avg_ratios'][reg]
-                    avg_ratios_j = item[samples[j]]['avg_ratios'][reg]
-                    med_ratios_i = item[samples[i]]['med_ratios'][reg]
-                    med_ratios_j = item[samples[j]]['med_ratios'][reg]
-                    avg_diff = abs(avg_ratios_i - avg_ratios_j)
-                    med_diff = abs(med_ratios_i - med_ratios_j)
-                    thing = {'chrom': item[samples[i]]['chrom'],
-                             'gene': item[samples[i]]['gene'],
-                             'sample_i': samples[i],
-                             'sample_j': samples[j],
-                             'avg_diff': avg_diff,
-                             'med_diff': med_diff,
-                             'region': item[samples[i]]['regions'][reg]}
-                    diffs.append(thing)
+                    try:
+                        avg_ratios_i = item[samples[i]]['avg_ratios'][reg]
+                        avg_ratios_j = item[samples[j]]['avg_ratios'][reg]
+                        med_ratios_i = item[samples[i]]['med_ratios'][reg]
+                        med_ratios_j = item[samples[j]]['med_ratios'][reg]
+                        avg_diff = abs(avg_ratios_i - avg_ratios_j)
+                        med_diff = abs(med_ratios_i - med_ratios_j)
+                        thing = {'chrom': item[samples[i]]['chrom'],
+                                 'gene': item[samples[i]]['gene'],
+                                 'sample_i': samples[i],
+                                 'sample_j': samples[j],
+                                 'avg_diff': avg_diff,
+                                 'med_diff': med_diff,
+                                 'region': item[samples[i]]['regions'][reg]}
+                        diffs.append(thing)
+                    except IndexError:
+                        continue
     #avg_stdev = np.std([x['avg_diff'] for x in diffs],ddof=1)
     #med_stdev = np.std([x['med_diff'] for x in diffs],ddof=1)
     return diffs
@@ -422,40 +478,40 @@ def analyzeRatios(ratios):
                 results[num_regions] += 0.5
     return results
 
-def computeRatios(dic, alns, annot):
-    for a in alns:
-        for chrom in dic:
-            alns[a]['changes'][chrom] = {}
-            for gene in dic[chrom]:
-                #########################################
-                # REMOVE THE ENCLOSED CODE FOR ACTUAL RUN
-                if len(dic[chrom][gene]) > 2:
-                    continue
-                #########################################
-                alns[a]['changes'][chrom][gene] = []
-                strand = annot[chrom][gene][0].strand
-                keys = dic[chrom][gene].keys()
-                if strand == '+':
-                    keys = sorted(keys, key = lambda x: int(x.split('-')[0]))
-                else:
-                    keys = sorted(keys, key = lambda x: int(x.split('-')[0]), reverse=True)
-                for span in keys:
-                    try:
-                        alns[a]['changes'][chrom][gene].append(dic[chrom][gene][span][a]['med'])
-                    except KeyError as e:
-                        print chrom, gene, span, a
-                        print e
-                changes = alns[a]['changes'][chrom][gene]
-                dists = []
-                for i in xrange(len(changes)-1):
-                    try:
-                        dist = changes[i+1]/changes[i]
-                    except ZeroDivisionError:
-                        #dist = float('inf')
-                        continue
-                    #dist = abs(changes[i] - changes[i+1])
-                    dists.append(dist)
-                total = sum(dists)
+#def computeRatios(dic, alns, annot):
+#    for a in alns:
+#        for chrom in dic:
+#            alns[a]['changes'][chrom] = {}
+#            for gene in dic[chrom]:
+#                #########################################
+#                # REMOVE THE ENCLOSED CODE FOR ACTUAL RUN
+#                if len(dic[chrom][gene]) > 2:
+#                    continue
+#                #########################################
+#                alns[a]['changes'][chrom][gene] = []
+#                strand = annot[chrom][gene][0].strand
+#                keys = dic[chrom][gene].keys()
+#                if strand == '+':
+#                    keys = sorted(keys, key = lambda x: int(x.split('-')[0]))
+#                else:
+#                    keys = sorted(keys, key = lambda x: int(x.split('-')[0]), reverse=True)
+#                for span in keys:
+#                    try:
+#                        alns[a]['changes'][chrom][gene].append(dic[chrom][gene][span][a]['med'])
+#                    except KeyError as e:
+#                        print chrom, gene, span, a
+#                        print e
+#                changes = alns[a]['changes'][chrom][gene]
+#                dists = []
+#                for i in xrange(len(changes)-1):
+#                    try:
+#                        dist = changes[i+1]/changes[i]
+#                    except ZeroDivisionError:
+#                        #dist = float('inf')
+#                        continue
+#                    #dist = abs(changes[i] - changes[i+1])
+#                    dists.append(dist)
+#                total = sum(dists)
 
 def genResults(annot, kleats, cls):
     results = {}
@@ -520,11 +576,17 @@ def genResults(annot, kleats, cls):
                     span = '{}-{}'.format(r[0],r[1])
                     results[chrom][gene][span] = {}
                     for a in aligns:
+                        print a
                         m = []
-                        for p in aligns[a]['align'].pileup(chrom, r[0], r[1]):
-                            if (r[0] <= p.pos <= r[1]):
-                                m.append(p.nsegments)
-                                aligns[a]['bg'].append('{}\t{}\t{}\t{}'.format(chrom,p.pos,p.pos+1,p.nsegments))
+                        try:
+                            print chrom, r[0], r[1]
+                            for p in aligns[a]['align'].pileup(chrom, r[0], r[1]):
+                                if (r[0] <= p.pos <= r[1]):
+                                    m.append(p.nsegments)
+                                    aligns[a]['bg'].append('{}\t{}\t{}\t{}'.format(chrom,p.pos,p.pos+1,p.nsegments))
+                        except ValueError:
+                            print 'No index for {}'.format(a)
+                            sys.exit()
                         sm = sorted(m)
                         lenm = len(sm)
                         if lenm <= 1:
@@ -596,13 +658,20 @@ if __name__ == '__main__':
 
     aligns = {}
 
-    for b in parseConfig(args.alignments):
+    num_aligns = 0
+    with open(args.alignments, 'r') as f:
+        for line in f:
+            num_aligns += 1
+    for i,b in enumerate(parseConfig(args.alignments)):
+        sprint('Loading alignment {}/{}\r'.format(i,num_aligns))
         name,ftype = os.path.splitext(os.path.abspath(b))
         name = os.path.basename(name)
-        if ftype == 'cram':
+        if ftype == '.cram':
             aligns[name] = {'align': pysam.AlignmentFile(b, 'rc'),'bg': None}
         else:
             aligns[name] = {'align': pysam.AlignmentFile(b, 'rb'),'bg': None}
+    print
+    print 'DONE'
 
     N = len(aligns)
     HSV_tuples = [(x*1.0/N, 0.5, 0.5) for x in range(N)]
@@ -612,18 +681,28 @@ if __name__ == '__main__':
     for i,name in enumerate(aligns):
         aligns[name]['bg'] = [genTrackLine(name+'.bg', name+'.bg', 'bedGraph', color=RGB_tuples[i])]
 
-    for k in parseConfig(args.kleats):
+    for i,k in enumerate(parseConfig(args.kleats)):
+        sprint('Loading kleat {}/{}\r'.format(i,num_aligns))
         kleat = parseKleat(k, with_pas=True, min_num_bridge_reads=2, min_bridge_read_tail_len=4)
         all_kleats += kleat
+    print
+    print 'DONE'
 
+    sprint('Sorting kleat data ...')
     all_kleats = sorted(all_kleats, key=lambda x: x.cleavage_site)
+    print 'DONE'
 
+    sprint('Grouping kleat data ...')
     kleats = groupKleat(all_kleats)
+    print 'DONE'
 
+    sys.setrecursionlimit(4000)
+    sprint('Clustering kleat data ...')
     for chrom in kleats:
         for gene in kleats[chrom]:
             sites = kleats[chrom][gene]
             sites = kleatLinkage(sites, args.cluster_window)
+    print 'DONE'
 
     sprint('Parsing GTF ...')
     annot = parseGTF(args.annotation, seqnames=['chr{}'.format(x) for x in range(1,23)] + ['chrX', 'chrY'], sources=['protein_coding'], features='UTR')
@@ -656,6 +735,7 @@ if __name__ == '__main__':
     for a in aligns:
         writeFile(args.outdir, a+'.bg', *aligns[a]['bg'])
 
+    #ratios = computeRatios(results, annot)
     ratios = computeRatios2(results, annot)
 
     ratios_path = os.path.join(args.outdir, 'ratios.dump')
@@ -663,7 +743,10 @@ if __name__ == '__main__':
     if not args.load:
         pickle.dump(ratios, open(ratios_path, 'wb'))
     else:
-        ratios = pickle.load(open(ratios_path, 'rb'))
+        try:
+            ratios = pickle.load(open(ratios_path, 'rb'))
+        except IOError:
+            ratios = computeRatios2(results, annot)
 
     ratios_human_path = os.path.join(args.outdir, 'ratios')
 
