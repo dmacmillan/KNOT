@@ -1,9 +1,18 @@
+
+__version__ = '1.0.0'
+
 import argparse, sys, os, math
 import colorsys
 import cPickle as pickle
 from copy import deepcopy
 #from pybedtools import *
 import pysam
+from multiprocessing import Pool
+import itertools
+import time
+from multiprocessing import Manager
+from Queue import Queue
+from threading import Thread
 
 def kleat_int(thing):
     try:
@@ -284,7 +293,8 @@ def iterKleatLinkage(sites, window=20):
         i += 1
     return sites
 
-def kleatLinkage(sites, window=20):
+def kleatLinkage(sites, window=20):#atuple):
+    #sites, window = atuple
     length = len(sites)
     #print length
     if length > 1:
@@ -301,7 +311,7 @@ def kleatLinkage(sites, window=20):
         if _min <= window:
             sites[r] = mergeKleatResults([sites[r],sites[s]])
             del(sites[s])
-            kleatLinkage(sites)
+            kleatLinkage(sites, window)#(sites, window))
     return sites
 
 def genTrackLine(name, description=None, _type=None, visibility=2, color=None):
@@ -432,12 +442,38 @@ def computeRatios2(results, annot):
     return output
 
 def interpretRatios2(ratios):
-    results = {}
+    #results = {}
+    diffs = []
     for chrom in ratios:
         for gene in ratios[chrom]:
             c = ratios[chrom][gene]
+            if not c:
+                continue
             if len(set([len(c[s]['med_ratios']) for s in c])) != 1:
                 continue
+            samples = c.keys()
+            for i in xrange(len(samples)-1):
+                for j in xrange(i+1,len(samples)):
+                    for reg in xrange(len(c[samples[i]]['regions'])-1):
+                        try:
+                            avg_ratios_i = c[samples[i]]['avg_ratios'][reg]
+                            avg_ratios_j = c[samples[j]]['avg_ratios'][reg]
+                            med_ratios_i = c[samples[i]]['med_ratios'][reg]
+                            med_ratios_j = c[samples[j]]['med_ratios'][reg]
+                            avg_diff = abs(avg_ratios_i - avg_ratios_j)
+                            med_diff = abs(med_ratios_i - med_ratios_j)
+                            thing = {'chrom': chrom,
+                                     'gene': gene,
+                                     'sample_i': samples[i],
+                                     'sample_j': samples[j],
+                                     'avg_diff': avg_diff,
+                                     'med_diff': med_diff,
+                                     'region': c[samples[i]]['regions'][reg]}
+                            diffs.append(thing)
+                        except IndexError:
+                            continue
+    return diffs
+                        
 
 def interpretRatios(data):
     diffs = []
@@ -513,10 +549,9 @@ def analyzeRatios(ratios):
 #                    dists.append(dist)
 #                total = sum(dists)
 
-def genResults(annot, kleats, cls):
+def genRegions(annot, kleats, cls):
     results = {}
-    fasta = regions = ''
-    data = [('\t').join(['GENE','STRAND','SAMPLE','REGION','LENGTH','MIN','Q1','MED','Q3','MAX','MEAN','SE'])]
+    regions = ''
     for chrom in annot:
         if chrom not in kleats:
             continue
@@ -529,7 +564,75 @@ def genResults(annot, kleats, cls):
             if gene in cls['ii']:
                 continue
             results[chrom][gene] = {}
-            print gene
+            strand = annot[chrom][gene][0].strand
+            if strand == '-':
+                keys = annot[chrom][gene][:1]
+            else:
+                keys = annot[chrom][gene][-2:]
+            for region in keys:
+                last = region.start
+                cleaved = False
+                cuts = []
+                for k in kleats[chrom][gene]:
+                    if (region.start < k.cleavage_site < region.end):
+                        cleaved = True
+                        cuts.append(k.cleavage_site)
+                if not cleaved:
+                    continue
+                coords = sorted([region.start, region.end] + cuts)
+                my_regions = []
+                for i in xrange(len(coords)-1):
+                    start = coords[i]
+                    stop = coords[i+1]
+                    if abs(stop-start) <= 20:
+                        coords[i+1] = coords[i]
+                        continue
+                    my_regions.append([start,stop])
+                for i,r in enumerate(my_regions):
+                    regions += ('\t').join([chrom, str(r[0]), str(r[1]), '{}_utr_{}'.format(gene,i), '0', region.strand, '\n'])
+                    span = '{}-{}'.format(r[0],r[1])
+                    results[chrom][gene][span] = {}
+    return results, regions
+
+def getPileupRegion(results, aligns, sample, chrom, gene, start, stop):
+    results, aligns, sample, chrom, gene, start, stop
+    print 'Getting pileup for {} {} {}:{}-{}'.format(sample,gene, chrom, start, stop)
+    r = []
+    bg = aligns[sample]['bg']
+    for p in aligns[sample]['align'].pileup(chrom, start, stop):
+        r.append(p.n)
+        bg.append('{}\t{}\t{}\t{}'.format(chrom,p.pos,p.pos+1,p.n))
+    length = len(r)
+    if length < 1:
+        return
+    r = sorted(r)
+    median = calcMedian(r)
+    mean = sum(r)/length
+    _min = r[0]
+    _max = r[1]
+    q1, q3 = calcIQR(r)
+    se = sstdev(r)/math.sqrt(length)
+    span = '{}-{}'.format(start,stop)
+    results[chrom][gene][span][sample] = {'median': median, 'mean': mean, 'q1': q1, 'q3': q3, 'min': _min, 'max': _max, 'se': se}
+    return
+
+def genResults(annot, kleats, cls):
+    q = Queue()
+    #results = {}
+    #fasta = regions = ''
+    data = [('\t').join(['GENE','STRAND','SAMPLE','REGION','LENGTH','MIN','Q1','MED','Q3','MAX','MEAN','SE'])]
+    for chrom in annot:
+        if chrom not in kleats:
+            continue
+        #results[chrom] = {}
+        for gene in annot[chrom]:
+            if gene not in kleats[chrom]:
+                continue
+            if (not annot[chrom][gene]):
+                continue
+            if gene in cls['ii']:
+                continue
+            #results[chrom][gene] = {}
             strand = annot[chrom][gene][0].strand
 #            gene_start = annot[chrom][gene][0].start
 #            gene_end = annot[chrom][gene][-1].end
@@ -568,46 +671,53 @@ def genResults(annot, kleats, cls):
                     my_regions.append([start,stop])
                 temp = []
                 for i,r in enumerate(my_regions):
-                    key = '{}:{}-{}'.format(chrom,r[0],r[1])
-                    regions += ('\t').join([chrom, str(r[0]), str(r[1]), '{}_utr_{}'.format(gene,i), '0', region.strand, '\n'])
-                    header = '>' + ('|').join([chrom, gene, str(r[0]), str(r[1]), region.strand]) + '\n'
-                    seq = ref.fetch(chrom, r[0], r[1]).upper() + '\n'
-                    fasta += header + seq
+                    #key = '{}:{}-{}'.format(chrom,r[0],r[1])
+                    #regions += ('\t').join([chrom, str(r[0]), str(r[1]), '{}_utr_{}'.format(gene,i), '0', region.strand, '\n'])
+                    #header = '>' + ('|').join([chrom, gene, str(r[0]), str(r[1]), region.strand]) + '\n'
+                    #seq = ref.fetch(chrom, r[0], r[1]).upper() + '\n'
+                    #fasta += header + seq
                     span = '{}-{}'.format(r[0],r[1])
                     results[chrom][gene][span] = {}
-                    for a in aligns:
-                        print a
-                        m = []
-                        try:
-                            print chrom, r[0], r[1]
-                            for p in aligns[a]['align'].pileup(chrom, r[0], r[1]):
-                                if (r[0] <= p.pos <= r[1]):
-                                    m.append(p.nsegments)
-                                    aligns[a]['bg'].append('{}\t{}\t{}\t{}'.format(chrom,p.pos,p.pos+1,p.nsegments))
-                        except ValueError:
-                            print 'No index for {}'.format(a)
-                            sys.exit()
-                        sm = sorted(m)
-                        lenm = len(sm)
-                        if lenm <= 1:
-                            continue
-                        _min = sm[0]
-                        _max = sm[-1]
-                        med = calcMedian(sm)
-                        q1, q3 = calcIQR(sm)
-                        avg = sum(sm)/float(lenm)
-                        se = sstdev(sm)/math.sqrt(lenm)
-                        temp.append([gene,strand,a,key,lenm,_min,q1,med,q3,_max,avg,se])
-                        results[chrom][gene][span][a] = {'med': med,
-                                                         'avg': avg}
-                if strand == '+':
-                    temp = sorted(temp, key=lambda x: int(x[3].split(':')[1].split('-')[0]))
-                else:
-                    temp = sorted(temp, key=lambda x: int(x[3].split(':')[1].split('-')[0]), reverse=True)
-                for i in xrange(len(temp)):
-                    temp[i] = ('\t').join([str(x) for x in temp[i]])
-                    data.append(temp[i])
-    return results, fasta, regions, data
+                    for sample in aligns:
+                        q.put([results, aligns, sample, chrom, gene, r[0], r[1]])
+    return q
+                    
+
+                            
+
+                        
+#                        #print a
+#                        m = []
+#                        try:
+#                            #print chrom, r[0], r[1]
+#                            for p in aligns[a]['align'].pileup(chrom, r[0], r[1]):
+#                                if (r[0] <= p.pos <= r[1]):
+#                                    m.append(p.nsegments)
+#                                    aligns[a]['bg'].append('{}\t{}\t{}\t{}'.format(chrom,p.pos,p.pos+1,p.nsegments))
+#                        except ValueError:
+#                            print 'No index for {}'.format(a)
+#                            sys.exit()
+#                        sm = sorted(m)
+#                        lenm = len(sm)
+#                        if lenm <= 1:
+#                            continue
+#                        _min = sm[0]
+#                        _max = sm[-1]
+#                        med = calcMedian(sm)
+#                        q1, q3 = calcIQR(sm)
+#                        avg = sum(sm)/float(lenm)
+#                        se = sstdev(sm)/math.sqrt(lenm)
+#                        temp.append([gene,strand,a,key,lenm,_min,q1,med,q3,_max,avg,se])
+#                        results[chrom][gene][span][a] = {'med': med,
+#                                                         'avg': avg}
+#                if strand == '+':
+#                    temp = sorted(temp, key=lambda x: int(x[3].split(':')[1].split('-')[0]))
+#                else:
+#                    temp = sorted(temp, key=lambda x: int(x[3].split(':')[1].split('-')[0]), reverse=True)
+#                for i in xrange(len(temp)):
+#                    temp[i] = ('\t').join([str(x) for x in temp[i]])
+#                    data.append(temp[i])
+#    return results, fasta, regions, data
 
 def calcMedian(lst):
     sortedLst = sorted(lst)
@@ -637,6 +747,12 @@ def calcIQR(array):
         uppermed = calcMedian(array[midpoint+1:])
     return [lowermed, uppermed]
 
+def worker(q):
+    while True:
+        item = q.get()
+        getPileupRegion(*item)
+        q.task_done()
+
 # Begin main thread
 if __name__ == '__main__':
 
@@ -648,7 +764,9 @@ if __name__ == '__main__':
     parser.add_argument('-cw', '--cluster_window', type=int, default=20, help='Set the window size for clustering KLEAT cleavage sites. Default = 20')
     parser.add_argument('-o', '--outdir', default=os.getcwd(), help='Directory to output to. Default is current directory')
     parser.add_argument('-r', '--reference', default='/home/dmacmillan/references/hg19/hg19.fa', help='Path to the reference genome from which to fetch sequences')
-    parser.add_argument('-l', '--load', action='store_true', help='Enable to load previous results rather than generate them from scratch.')
+    parser.add_argument('-lc', '--load_clusters', help='clusters.dump file')
+    parser.add_argument('-la', '--load_annotation', help='annotation.dump file')
+    parser.add_argument('-t', '--threads', type=int, default=1, help='Number of threads to use. Default is 1')
     
     args = parser.parse_args()
 
@@ -656,6 +774,9 @@ if __name__ == '__main__':
 
     all_kleats = []
 
+    manager = Manager()
+
+    #aligns = manager.dict()
     aligns = {}
 
     num_aligns = 0
@@ -667,11 +788,10 @@ if __name__ == '__main__':
         name,ftype = os.path.splitext(os.path.abspath(b))
         name = os.path.basename(name)
         if ftype == '.cram':
-            aligns[name] = {'align': pysam.AlignmentFile(b, 'rc'),'bg': None}
+            aligns[name] = {'align': pysam.AlignmentFile(b, 'rc'),'bg': None, 'path': b}
         else:
-            aligns[name] = {'align': pysam.AlignmentFile(b, 'rb'),'bg': None}
-    print
-    print 'DONE'
+            aligns[name] = {'align': pysam.AlignmentFile(b, 'rb'),'bg': None, 'path': b}
+    print 'Loading alignment {}/{} DONE'.format(num_aligns,num_aligns)
 
     N = len(aligns)
     HSV_tuples = [(x*1.0/N, 0.5, 0.5) for x in range(N)]
@@ -681,101 +801,136 @@ if __name__ == '__main__':
     for i,name in enumerate(aligns):
         aligns[name]['bg'] = [genTrackLine(name+'.bg', name+'.bg', 'bedGraph', color=RGB_tuples[i])]
 
-    for i,k in enumerate(parseConfig(args.kleats)):
-        sprint('Loading kleat {}/{}\r'.format(i,num_aligns))
-        kleat = parseKleat(k, with_pas=True, min_num_bridge_reads=2, min_bridge_read_tail_len=4)
-        all_kleats += kleat
-    print
-    print 'DONE'
+    saved_clusters = os.path.join(args.outdir,'clusters.dump')
 
-    sprint('Sorting kleat data ...')
-    all_kleats = sorted(all_kleats, key=lambda x: x.cleavage_site)
-    print 'DONE'
-
-    sprint('Grouping kleat data ...')
-    kleats = groupKleat(all_kleats)
-    print 'DONE'
-
-    sys.setrecursionlimit(4000)
-    sprint('Clustering kleat data ...')
-    for chrom in kleats:
-        for gene in kleats[chrom]:
-            sites = kleats[chrom][gene]
-            sites = kleatLinkage(sites, args.cluster_window)
-    print 'DONE'
-
-    sprint('Parsing GTF ...')
-    annot = parseGTF(args.annotation, seqnames=['chr{}'.format(x) for x in range(1,23)] + ['chrX', 'chrY'], sources=['protein_coding'], features='UTR')
-
-    annot = groupGTF(annot)
-    cls = clsGTF(annot)
-    print 'DONE'
-
-    regions = ''
-    fasta = ''
-
-    results = {}
-
-    saved = os.path.join(args.outdir, 'results.dump')
-
-    if not args.load:
-        sprint('Computing results ...')
-        results, fasta, regions, stats = genResults(annot,kleats,cls)
+    if not args.load_clusters:
+        for i,k in enumerate(parseConfig(args.kleats)):
+            sprint('Loading kleat {}/{}\r'.format(i,num_aligns))
+            kleat = parseKleat(k, with_pas=True, min_num_bridge_reads=2, min_bridge_read_tail_len=4)
+            all_kleats += kleat
+        print 'Loading kleat {}/{} DONE'.format(num_aligns,num_aligns)
+        
+        # Sorting
+        sprint('Sorting kleat data ...')
+        all_kleats = sorted(all_kleats, key=lambda x: x.cleavage_site)
         print 'DONE'
-        path = writeFile(args.outdir, 'regions.bed', regions)
-        print 'regions.bed -> {}'.format(path)
-        path = writeFile(args.outdir, 'regions.fa', fasta)
-        print 'regions.fa -> {}'.format(path)
-        path = writeFile(args.outdir, 'stats', ('\n').join(stats))
-        print 'stats -> {}'.format(path)
-        pickle.dump(results, open(saved, 'wb'))
+        
+        # Grouping
+        sprint('Grouping kleat data ...')
+        kleats = groupKleat(all_kleats)
+        print 'DONE'
+
+        # Clustering
+
+        sys.setrecursionlimit(4000)
+        start = time.time()
+        sprint('Clustering kleat data ...')
+        for chrom in kleats:
+            for gene in kleats[chrom]:
+                sites = kleats[chrom][gene]
+                sites = kleatLinkage(sites, args.cluster_window)
+        print 'DONE'
+        pickle.dump(kleats, open(saved_clusters,'w'))
     else:
-        results = pickle.load(open(saved, 'rb'))
+        sprint('Loading kleat data ...')
+        kleats = pickle.load(open(args.load_clusters,'rb'))
+        print 'DONE'
+
+    saved_annot = os.path.join(args.outdir, 'annotation.dump')
+
+    if not args.load_annotation:
+        sprint('Parsing GTF ...')
+        annot = parseGTF(args.annotation, seqnames=['chr{}'.format(x) for x in range(1,23)] + ['chrX', 'chrY'], sources=['protein_coding'], features='UTR')
+    
+        annot = groupGTF(annot)
+        pickle.dump(annot, open(saved_annot, 'wb'))
+        cls = clsGTF(annot)
+        print 'DONE'
+    else:
+        sprint('Loading annotation ...')
+        annot = pickle.load(open(args.load_annotation,'rb'))
+        cls = clsGTF(annot)
+        print 'DONE'
+
+    saved_results = os.path.join(args.outdir, 'results.dump')
+
+    results, regions = genRegions(annot, kleats, cls)
+
+    writeFile(args.outdir, 'regions.bed', regions)
+
+    q = genResults(annot, kleats, cls)
+    print q.qsize()
+
+    for i in range(args.threads):
+        t = Thread(target = worker, args = (q, ))
+        t.setDaemon(True)
+        t.start()
+
+    q.join()
+    print 'DONE'
 
     for a in aligns:
         writeFile(args.outdir, a+'.bg', *aligns[a]['bg'])
 
-    #ratios = computeRatios(results, annot)
     ratios = computeRatios2(results, annot)
-
     ratios_path = os.path.join(args.outdir, 'ratios.dump')
+    pickle.dump(ratios, open(ratios_path, 'wb'))
 
-    if not args.load:
-        pickle.dump(ratios, open(ratios_path, 'wb'))
-    else:
-        try:
-            ratios = pickle.load(open(ratios_path, 'rb'))
-        except IOError:
-            ratios = computeRatios2(results, annot)
+    diffs = interpretRatios2(ratios)
+    diffs_path = os.path.join(args.outdir, 'diffs.dump')
+    pickle.dump(diffs, open(diffs_path, 'wb'))
 
-    ratios_human_path = os.path.join(args.outdir, 'ratios')
+    #def getPileupRegion(result, aligns, sample, chrom, gene, start, stop):
 
-    diffs = interpretRatios(ratios)
 
-    to_write = []
 
-    try:
-        avg_stdev = sstdev([x['avg_diff'] for x in diffs])
-        med_stdev = sstdev([x['med_diff'] for x in diffs])
-    except ValueError:
-        avg_stdev = None
-        med_stdev = None
-    for i in diffs:
-        reg = i['chrom'] + ':' + i['region']
-        if i['avg_diff'] >= avg_stdev or not avg_stdev:
-            to_write.append('AVG\t{}\t{}\t{}\t{}'.format(reg,i['gene'],i['sample_i'],i['sample_j']))
-        if i['med_diff'] >= med_stdev or not med_stdev:
-            to_write.append('MED\t{}\t{}\t{}\t{}'.format(reg,i['gene'],i['sample_i'],i['sample_j']))
-
-    writeFile(args.outdir, 'significant.knot', *to_write)
-#    with open(ratios_human_path, 'w') as f:
-#        f.write('CHROM\tGENE\tSTRAND\tSAMPLE\tMEDIANS\tAVERAGES\n')
-#        for c in results:
-#            for g in results[c]:
-#                if g not in ratios:
-#                    continue
-#                for a in ratios[g]:
-#                    try:
-#                        f.write('{}\t{}\t{}\t{}\t{}\t{}\n'.format(c,g,annot[c][g][0].strand,a,(',').join([str(x) for x in ratios[g][a]['med']]),(',').join([str(x) for x in ratios[g][a]['avg']])))
-#                    except KeyError:
-#                        print c, g
+#    if not args.load:
+#        sprint('Computing results ...')
+#        results, fasta, regions, stats = genResults(annot,kleats,cls)
+#        print 'DONE'
+#        path = writeFile(args.outdir, 'regions.bed', regions)
+#        print 'regions.bed -> {}'.format(path)
+#        path = writeFile(args.outdir, 'regions.fa', fasta)
+#        print 'regions.fa -> {}'.format(path)
+#        path = writeFile(args.outdir, 'stats', ('\n').join(stats))
+#        print 'stats -> {}'.format(path)
+#        pickle.dump(results, open(saved, 'wb'))
+#    else:
+#        results = pickle.load(open(saved, 'rb'))
+#
+#    for a in aligns:
+#        writeFile(args.outdir, a+'.bg', *aligns[a]['bg'])
+#
+#    #ratios = computeRatios(results, annot)
+#    ratios = computeRatios2(results, annot)
+#
+#    ratios_path = os.path.join(args.outdir, 'ratios.dump')
+#
+#    if not args.load:
+#        pickle.dump(ratios, open(ratios_path, 'wb'))
+#    else:
+#        try:
+#            ratios = pickle.load(open(ratios_path, 'rb'))
+#        except IOError:
+#            ratios = computeRatios2(results, annot)
+#
+#    ratios_human_path = os.path.join(args.outdir, 'ratios')
+#
+#    diffs = interpretRatios(ratios)
+#
+#    to_write = []
+#
+#    try:
+#        avg_stdev = sstdev([x['avg_diff'] for x in diffs])
+#        med_stdev = sstdev([x['med_diff'] for x in diffs])
+#    except ValueError:
+#        avg_stdev = None
+#        med_stdev = None
+#    for i in diffs:
+#        reg = i['chrom'] + ':' + i['region']
+#        if i['avg_diff'] >= avg_stdev or not avg_stdev:
+#            to_write.append('AVG\t{}\t{}\t{}\t{}'.format(reg,i['gene'],i['sample_i'],i['sample_j']))
+#        if i['med_diff'] >= med_stdev or not med_stdev:
+#            to_write.append('MED\t{}\t{}\t{}\t{}'.format(reg,i['gene'],i['sample_i'],i['sample_j']))
+#
+#    writeFile(args.outdir, 'significant.knot', *to_write)
