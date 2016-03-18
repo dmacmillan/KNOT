@@ -6,12 +6,10 @@ import colorsys
 import cPickle as pickle
 from copy import deepcopy
 import pysam
-from multiprocessing import Pool
-import itertools
 import time
-from multiprocessing import Manager
 from Queue import Queue
 from threading import Thread
+import subprocess
 
 def kleat_int(thing):
     try:
@@ -490,9 +488,9 @@ def genRegions(annot, kleats, cls):
                 cleaved = False
                 cuts = []
                 for k in kleats[chrom][gene]:
-                    if (region.start < k.cleavage_site < region.end):
+                    if (region.start < k < region.end):
                         cleaved = True
-                        cuts.append(k.cleavage_site)
+                        cuts.append(k)
                 if not cleaved:
                     continue
                 coords = sorted([region.start, region.end] + cuts)
@@ -532,9 +530,23 @@ def getPileupRegion(results, aligns, sample, chrom, gene, start, stop):
     results[chrom][gene][span][sample] = {'median': median, 'mean': mean, 'q1': q1, 'q3': q3, 'min': _min, 'max': _max, 'se': se}
     return
 
+def genStats(results, aligns, annot):
+    data = [('\t').join(['GENE','STRAND','SAMPLE','REGION','LENGTH','MIN','Q1','MED','Q3','MAX','MEAN','SE'])]
+    for chrom in results:
+        for gene in results[chrom]:
+            c = results[chrom][gene]
+            strand = annot[chrom][gene][0].strand
+            if not c:
+                continue
+            for span in c:
+                start, stop = [int(x) for x in span.split('-')]
+                for sample in aligns:
+                    cur = c[span][sample]
+                    data.append(('\t').join([str(x) for x in [gene, strand, sample, chrom + ':' + span, stop-start, cur['min'], cur['q1'], cur['median'], cur['q3'], cur['max'], cur['mean'], cur['se']]]))
+    return data
+
 def genResults(annot, kleats, cls):
     q = Queue()
-    data = [('\t').join(['GENE','STRAND','SAMPLE','REGION','LENGTH','MIN','Q1','MED','Q3','MAX','MEAN','SE'])]
     for chrom in annot:
         if chrom not in kleats:
             continue
@@ -557,9 +569,9 @@ def genResults(annot, kleats, cls):
                 cleaved = False
                 cuts = []
                 for k in kleats[chrom][gene]:
-                    if (region.start < k.cleavage_site < region.end):
+                    if (region.start < k < region.end):
                         cleaved = True
-                        cuts.append(k.cleavage_site)
+                        cuts.append(k)
                 if not cleaved:
                     continue
                 coords = sorted([region.start, region.end] + cuts)
@@ -614,19 +626,30 @@ def worker(q):
         q.task_done()
 
 def AHC(mylist, window=20):
-    length = len(mylist)                                              print length
+    length = len(mylist)
     if length <= 1:
         return mylist
-    mymin = float('inf')                                              r = s = None
+    mymin = float('inf')
+    r = s = None
     for i in xrange(length-1):
         dist = mylist[i+1] - mylist[i]
         if dist < mymin:
             r = i
             s = i + 1
-            mymin = dist                                              if mymin <= window:
+            mymin = dist
+    if mymin <= window:
         mylist[r] = sum([mylist[r],mylist[s]])/2
         del(mylist[s])
-        AHC(mylist, window)                                           return mylist
+        AHC(mylist, window)
+    return mylist
+
+def checkSeq(align, region, samtools):
+    command = [samtools, 'view', align, region]
+    p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    o,e = p.communicate()
+    if e == 'Container header CRC32 failure\n':
+        return False
+    return True
 
 # Begin main thread
 if __name__ == '__main__':
@@ -639,13 +662,18 @@ if __name__ == '__main__':
     parser.add_argument('-cw', '--cluster_window', type=int, default=20, help='Set the window size for clustering KLEAT cleavage sites. Default = 20')
     parser.add_argument('-o', '--outdir', default=os.getcwd(), help='Directory to output to. Default is current directory')
     parser.add_argument('-r', '--reference', default='/home/dmacmillan/references/hg19/hg19.fa', help='Path to the reference genome from which to fetch sequences')
-    parser.add_argument('-lc', '--load_clusters', help='clusters.dump file')
     parser.add_argument('-la', '--load_annotation', help='annotation.dump file')
     parser.add_argument('-t', '--threads', type=int, default=1, help='Number of threads to use. Default is 1')
     
     args = parser.parse_args()
 
+    # Output files
+    results_dump = os.path.join(args.outdir, 'results.dump')
+    annot_dump = os.path.join(args.outdir, 'annotation.dump')
+
     ref = pysam.FastaFile(args.reference)
+
+    samtools = '/gsc/btl/linuxbrew/bin/samtools'
 
     all_kleats = []
 
@@ -673,7 +701,18 @@ if __name__ == '__main__':
     for i,name in enumerate(aligns):
         aligns[name]['bg'] = [genTrackLine(name+'.bg', name+'.bg', 'bedGraph', color=RGB_tuples[i])]
 
-    saved_clusters = os.path.join(args.outdir,'clusters.dump')
+    bad_aligns = []
+    quit = False
+    # Check alignments
+    for sample in aligns:
+        if not checkSeq(aligns[sample]['path'], 'chr1:10000-15000', samtools):
+            quit = True
+            print 'BAD ALIGNMENT: {}'.format(sample)
+            bad_aligns.append('/gsc/btl/linuxbrew/bin/samtools view -@ 12 -b -h /projects/btl/polya/sorted_star_ccle/{}.cram | /gsc/btl/linuxbrew/bin/samtools view -C -T /home/dmacmillan/references/hg19/hg19.fa -@ 12 -o /projects/btl/polya/sorted_star_ccle/reconverted_{}.cram -; mv /projects/btl/polya/sorted_star_ccle/{}.cram /projects/btl/polya/sorted_star_ccle/old_{}.cram; rm /projects/btl/polya/sorted_star_ccle/{}.cram.crai; mv /projects/btl/polya/sorted_star_ccle/reconverted_{}.cram /projects/btl/polya/sorted_star_ccle/{}.cram; /gsc/btl/linuxbrew/bin/samtools index /projects/btl/polya/sorted_star_ccle/{}.cram &'.format(sample, sample,  sample, sample, sample, sample, sample, sample))
+
+    if quit:
+        writeFile(args.outdir, 'fix_bad_aligns', *bad_aligns)
+        sys.exit('Some alignments were broken, please fix before continuing')
 
     # Parse KLEAT files
     for i,k in enumerate(parseConfig(args.kleats)):
@@ -688,19 +727,22 @@ if __name__ == '__main__':
     print 'DONE'
 
     # Clustering
+    start = time.time()
+    sprint('Clustering cleavage events ...')
     for chrom in kleats:
-        for gene in kleats:
+        for gene in kleats[chrom]:
+            if not kleats[chrom][gene]:
+                continue
             kleats[chrom][gene] = sorted(set([x.cleavage_site for x in kleats[chrom][gene]]))
-            kleats[chrom][gene] = AHC(kleats[chrom][gene])
-
-    saved_annot = os.path.join(args.outdir, 'annotation.dump')
+            kleats[chrom][gene] = AHC(kleats[chrom][gene], args.cluster_window)
+    print 'DONE ({}s)'.format(time.time()-start)
 
     if not args.load_annotation:
         sprint('Parsing GTF ...')
         annot = parseGTF(args.annotation, seqnames=['chr{}'.format(x) for x in range(1,23)] + ['chrX', 'chrY'], sources=['protein_coding'], features='UTR')
     
         annot = groupGTF(annot)
-        pickle.dump(annot, open(saved_annot, 'wb'))
+        pickle.dump(annot, open(annot_dump, 'wb'))
         cls = clsGTF(annot)
         print 'DONE'
     else:
@@ -708,8 +750,6 @@ if __name__ == '__main__':
         annot = pickle.load(open(args.load_annotation,'rb'))
         cls = clsGTF(annot)
         print 'DONE'
-
-    saved_results = os.path.join(args.outdir, 'results.dump')
 
     results, regions = genRegions(annot, kleats, cls)
 
@@ -729,10 +769,9 @@ if __name__ == '__main__':
     for a in aligns:
         writeFile(args.outdir, a+'.bg', *aligns[a]['bg'])
 
-    ratios = computeRatios(results, annot)
-    ratios_path = os.path.join(args.outdir, 'ratios.dump')
-    pickle.dump(ratios, open(ratios_path, 'wb'))
+    stats = genStats(results, aligns, annot)
 
-    diffs = interpretRatios(ratios)
-    diffs_path = os.path.join(args.outdir, 'diffs.dump')
-    pickle.dump(diffs, open(diffs_path, 'wb'))
+    writeFile(args.outdir, 'stats', *stats)
+
+    #ratios = computeRatios(results, annot)
+    #diffs = interpretRatios(ratios)
