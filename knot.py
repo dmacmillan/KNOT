@@ -1,5 +1,5 @@
 
-__version__ = '1.0.1'
+__version__ = '1.0.2'
 
 import argparse, sys, os, math
 import colorsys
@@ -510,7 +510,7 @@ def genRegions(annot, kleats, cls):
 
 def getPileupRegion(results, aligns, sample, chrom, gene, start, stop):
     results, aligns, sample, chrom, gene, start, stop
-    print 'Getting pileup for {} {} {}:{}-{}'.format(sample,gene, chrom, start, stop)
+    print 'Getting pileup for {} {} {}:{}-{}'.format(sample, gene, chrom, start, stop)
     r = []
     bg = aligns[sample]['bg']
     for p in aligns[sample]['align'].pileup(chrom, start, stop):
@@ -523,7 +523,7 @@ def getPileupRegion(results, aligns, sample, chrom, gene, start, stop):
     median = calcMedian(r)
     mean = sum(r)/length
     _min = r[0]
-    _max = r[1]
+    _max = r[-1]
     q1, q3 = calcIQR(r)
     se = sstdev(r)/math.sqrt(length)
     span = '{}-{}'.format(start,stop)
@@ -535,17 +535,89 @@ def genStats(results, aligns, annot):
     for chrom in results:
         for gene in results[chrom]:
             c = results[chrom][gene]
-            strand = annot[chrom][gene][0].strand
             if not c:
                 continue
+            strand = annot[chrom][gene][0].strand
             for span in c:
                 start, stop = [int(x) for x in span.split('-')]
-                for sample in aligns:
+                for sample in c[span]:
                     cur = c[span][sample]
                     data.append(('\t').join([str(x) for x in [gene, strand, sample, chrom + ':' + span, stop-start, cur['min'], cur['q1'], cur['median'], cur['q3'], cur['max'], cur['mean'], cur['se']]]))
     return data
 
-def genResults(annot, kleats, cls):
+def doEverything(annot, kleats, cls, myfile):
+    data = ('\t').join(['GENE','STRAND','SAMPLE','REGION','LENGTH','MIN','Q1','MED','Q3','MAX','MEAN','SE']) + '\n'
+    myfile.write(data)
+    myfile.flush()
+    for chrom in kleats:
+        #print 'chrom: {}'.format(chrom)
+        for gene in kleats[chrom]:
+            #print '  gene: {}'.format(gene)
+            if not kleats[chrom][gene]:
+                #print 'kleats {} {} is empty'.format(chrom,gene)
+                continue
+            elif gene in cls['ii']:
+                #print '{} is overlapping'.format(gene)
+                continue
+            elif chrom not in annot:
+                #print '{} is not in annot'.format(chrom)
+                continue
+            elif gene not in annot[chrom]:
+                #print '{} not in annot {}'.format(gene, chrom)
+                continue
+            strand = annot[chrom][gene][0].strand
+            if strand == '-':
+                utr3 = annot[chrom][gene][:1]
+            else:
+                utr3 = annot[chrom][gene][-2:]
+            for region in utr3:
+                #print '    span: {}-{}'.format(region.start, region.end)
+                last = region.start
+                intervals = []
+                splices = 0
+                cleaved = False
+                cuts = []
+                for k in kleats[chrom][gene]:
+                    if (region.start < k < region.end):
+                        cleaved = True
+                        cuts.append(k)
+                if not cleaved:
+                    continue
+                coords = sorted([region.start, region.end] + cuts)
+                my_regions = []
+                for i in xrange(len(coords)-1):
+                    start = coords[i]
+                    stop = coords[i+1]
+                    if abs(stop-start) <= 20:
+                        coords[i+1] = coords[i]
+                        continue
+                    my_regions.append([start,stop])
+                for i,r in enumerate(my_regions):
+                    span = '{}-{}'.format(r[0],r[1])
+                    for sample in aligns:
+                        s = []
+                        #bg = aligns[sample]['bg']
+                        for p in aligns[sample]['align'].pileup(chrom, r[0], r[1]):
+                            if r[0] <= p.pos <= r[1]:
+                                s.append(p.n)
+                            #bg.append('{}\t{}\t{}\t{}'.format(chrom,p.pos,p.pos+1,p.n))
+                        length = len(s)
+                        if length < 3:
+                            continue
+                        s = sorted(s)
+                        median = calcMedian(s)
+                        mean = sum(s)/length
+                        _min = s[0]
+                        _max = s[-1]
+                        q1, q3 = calcIQR(s)
+                        se = sstdev(s)/math.sqrt(length)
+                        span = '{}-{}'.format(r[0],r[1])
+                        print 'Writing {}\t{}\t{}'.format(sample, gene, chrom+':'+span)
+                        towrite = ('\t').join([str(x) for x in [gene, strand, sample, chrom + ':' + span, r[1]-r[0], _min, q1, median, q3, _max, mean, se]]) + '\n'
+                        myfile.write(towrite)
+                        myfile.flush()
+
+def genResults(results, annot, kleats, cls):
     q = Queue()
     for chrom in annot:
         if chrom not in kleats:
@@ -588,8 +660,9 @@ def genResults(annot, kleats, cls):
                     span = '{}-{}'.format(r[0],r[1])
                     results[chrom][gene][span] = {}
                     for sample in aligns:
-                        q.put([results, aligns, sample, chrom, gene, r[0], r[1]])
-    return q
+                        getPileupRegion(results, aligns, sample, chrom, gene, r[0], r[1])
+                        #q.put([results, aligns, sample, chrom, gene, r[0], r[1]])
+    return
 
 def calcMedian(lst):
     sortedLst = sorted(lst)
@@ -659,17 +732,23 @@ if __name__ == '__main__':
     parser.add_argument('annotation', help='Genome annotation file if GTF format')
     parser.add_argument('kleats', help='File containing list of kleat output files to use')
     parser.add_argument('alignments', help='File containing list of alignment output files to use. Must be in BAM or SAM format. Names of each BAM/SAM file must also differ')
+    parser.add_argument('-a', '--align', nargs='*', help='One or more alignment files to process, overrides the "alignments parameter"')
     parser.add_argument('-cw', '--cluster_window', type=int, default=20, help='Set the window size for clustering KLEAT cleavage sites. Default = 20')
     parser.add_argument('-o', '--outdir', default=os.getcwd(), help='Directory to output to. Default is current directory')
     parser.add_argument('-r', '--reference', default='/home/dmacmillan/references/hg19/hg19.fa', help='Path to the reference genome from which to fetch sequences')
     parser.add_argument('-la', '--load_annotation', help='annotation.dump file')
-    parser.add_argument('-t', '--threads', type=int, default=1, help='Number of threads to use. Default is 1')
+    parser.add_argument('-lc', '--load_clusters', help='clusters.dump file')
     
     args = parser.parse_args()
+
+    if not os.path.isdir(args.outdir):
+        print 'Outdir {} does not exist, creating ...'.format(args.outdir)
+        os.makedirs(args.outdir)
 
     # Output files
     results_dump = os.path.join(args.outdir, 'results.dump')
     annot_dump = os.path.join(args.outdir, 'annotation.dump')
+    clusters_dump = os.path.join(args.outdir, 'clusters.dump')
 
     ref = pysam.FastaFile(args.reference)
 
@@ -679,19 +758,33 @@ if __name__ == '__main__':
 
     aligns = {}
 
-    num_aligns = 0
-    with open(args.alignments, 'r') as f:
-        for line in f:
-            num_aligns += 1
-    for i,b in enumerate(parseConfig(args.alignments)):
-        sprint('Loading alignment {}/{}\r'.format(i,num_aligns))
-        name,ftype = os.path.splitext(os.path.abspath(b))
-        name = os.path.basename(name)
-        if ftype == '.cram':
-            aligns[name] = {'align': pysam.AlignmentFile(b, 'rc'),'bg': None, 'path': b}
-        else:
-            aligns[name] = {'align': pysam.AlignmentFile(b, 'rb'),'bg': None, 'path': b}
-    print 'Loading alignment {}/{} DONE'.format(num_aligns,num_aligns)
+    if not args.align:
+        num_aligns = 0
+        with open(args.alignments, 'r') as f:
+            for line in f:
+                num_aligns += 1
+        for i,b in enumerate(parseConfig(args.alignments)):
+            sprint('Loading alignment {}/{}\r'.format(i,num_aligns))
+            name,ftype = os.path.splitext(os.path.abspath(b))
+            name = os.path.basename(name)
+            if ftype == '.cram':
+                aligns[name] = {'align': pysam.AlignmentFile(b, 'rc'),'bg': None, 'path': b}
+            else:
+                aligns[name] = {'align': pysam.AlignmentFile(b, 'rb'),'bg': None, 'path': b}
+        print 'Loading alignment {}/{} DONE'.format(num_aligns,num_aligns)
+    else:
+        for i,b in enumerate(args.align):
+            name,ftype = os.path.splitext(os.path.abspath(b))
+            name = os.path.basename(name)
+            if ftype == '.cram':
+                aligns[name] = {'align': pysam.AlignmentFile(b, 'rc'),'bg': None, 'path': b}
+            else:
+                aligns[name] = {'align': pysam.AlignmentFile(b, 'rb'),'bg': None, 'path': b}
+            if not aligns[name]['align'].has_index():
+                sprint('{} has no index! Creating... '.format(name))
+                pysam.index(b)
+                aligns[name] = {'align': pysam.AlignmentFile(b, 'rc'),'bg': None, 'path': b}
+                print 'DONE'
 
     N = len(aligns)
     HSV_tuples = [(x*1.0/N, 0.5, 0.5) for x in range(N)]
@@ -714,28 +807,35 @@ if __name__ == '__main__':
         writeFile(args.outdir, 'fix_bad_aligns', *bad_aligns)
         sys.exit('Some alignments were broken, please fix before continuing')
 
-    # Parse KLEAT files
-    for i,k in enumerate(parseConfig(args.kleats)):
-        sprint('Loading kleat {}/{}\r'.format(i,num_aligns))
-        kleat = parseKleat(k, with_pas=True, min_num_bridge_reads=2, min_bridge_read_tail_len=4)
-        all_kleats += kleat
-    print 'Loading kleat {}/{} DONE'.format(num_aligns,num_aligns)
+    if not args.load_clusters:
+        # Parse KLEAT files
+        for i,k in enumerate(parseConfig(args.kleats)):
+            sprint('Loading kleat {}/{}\r'.format(i,num_aligns))
+            kleat = parseKleat(k, with_pas=True, min_num_bridge_reads=2, min_bridge_read_tail_len=4)
+            all_kleats += kleat
+        print 'Loading kleat {}/{} DONE'.format(num_aligns,num_aligns)
+        
+        # Grouping
+        sprint('Grouping kleat data ...')
+        kleats = groupKleat(all_kleats)
+        print 'DONE'
     
-    # Grouping
-    sprint('Grouping kleat data ...')
-    kleats = groupKleat(all_kleats)
-    print 'DONE'
-
-    # Clustering
-    start = time.time()
-    sprint('Clustering cleavage events ...')
-    for chrom in kleats:
-        for gene in kleats[chrom]:
-            if not kleats[chrom][gene]:
-                continue
-            kleats[chrom][gene] = sorted(set([x.cleavage_site for x in kleats[chrom][gene]]))
-            kleats[chrom][gene] = AHC(kleats[chrom][gene], args.cluster_window)
-    print 'DONE ({}s)'.format(time.time()-start)
+        # Clustering
+        start = time.time()
+        sprint('Clustering cleavage events ...')
+        for chrom in kleats:
+            for gene in kleats[chrom]:
+                if not kleats[chrom][gene]:
+                    continue
+                kleats[chrom][gene] = sorted(set([x.cleavage_site for x in kleats[chrom][gene]]))
+                kleats[chrom][gene] = AHC(kleats[chrom][gene], args.cluster_window)
+        print 'DONE ({}s)'.format(time.time()-start)
+    
+        pickle.dump(kleats, open(clusters_dump, 'wb'))
+    else:
+        sprint('Loading clusters ...')
+        kleats = pickle.load(open(args.load_clusters, 'rb'))
+        print 'DONE'
 
     if not args.load_annotation:
         sprint('Parsing GTF ...')
@@ -751,27 +851,36 @@ if __name__ == '__main__':
         cls = clsGTF(annot)
         print 'DONE'
 
-    results, regions = genRegions(annot, kleats, cls)
+    myfile = open(os.path.join(args.outdir, 'stats'), 'w')
 
-    writeFile(args.outdir, 'regions.bed', regions)
+    doEverything(annot, kleats, cls, myfile)
 
-    q = genResults(annot, kleats, cls)
-    print q.qsize()
+    myfile.close()
+    #results, regions = genRegions(annot, kleats, cls)
 
-    for i in range(args.threads):
-        t = Thread(target = worker, args = (q, ))
-        t.setDaemon(True)
-        t.start()
+    #writeFile(args.outdir, 'regions.bed', regions)
 
-    q.join()
-    print 'DONE'
+    #q = genResults(results, annot, kleats, cls)
+    #print q.qsize()
 
-    for a in aligns:
-        writeFile(args.outdir, a+'.bg', *aligns[a]['bg'])
+#    for i in range(args.threads):
+#        t = Thread(target = worker, args = (q, ))
+#        t.setDaemon(True)
+#        t.start()
+#
+#    q.join()
+    #print 'DONE'
 
-    stats = genStats(results, aligns, annot)
+    #sprint('Writing bedgraphs ...')
+    #for a in aligns:
+    #    writeFile(args.outdir, a+'.bg', *aligns[a]['bg'])
+    #print 'DONE'
 
-    writeFile(args.outdir, 'stats', *stats)
+    #sprint('Generating statistics ...')
+    #stats = genStats(results, aligns, annot)
+    #print 'DONE'
+
+    #writeFile(args.outdir, 'stats', *stats)
 
     #ratios = computeRatios(results, annot)
     #diffs = interpretRatios(ratios)
